@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { CrownIcon } from "./CrownIcon";
 import { generateSeedPhrase, validateSeedPhrase, createWallet, WalletData } from "@/lib/wallet";
-import { Shield, Key, Import, Eye, EyeOff, Copy, Check, AlertTriangle } from "lucide-react";
+import { Shield, Key, Import, Eye, EyeOff, Copy, Check, AlertTriangle, Globe } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 
 interface WalletSetupProps {
@@ -19,11 +19,22 @@ export function WalletSetup({ onWalletCreated }: WalletSetupProps) {
   const [copied, setCopied] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleCreateWallet = () => {
-    const phrase = generateSeedPhrase();
-    setSeedPhrase(phrase);
-    setStep("create");
+    try {
+      const phrase = generateSeedPhrase();
+      setSeedPhrase(phrase);
+      setStep("create");
+      setError(null);
+    } catch (err: any) {
+      setError("Failed to generate seed phrase. Please try again.");
+      toast({
+        title: "Error",
+        description: "Failed to generate seed phrase",
+        variant: "destructive",
+      });
+    }
   };
 
   const handleCopyPhrase = async () => {
@@ -43,13 +54,20 @@ export function WalletSetup({ onWalletCreated }: WalletSetupProps) {
       return;
     }
     setIsLoading(true);
+    setError(null);
     try {
       const wallet = await createWallet(seedPhrase);
+      toast({
+        title: "Wallet created!",
+        description: `Address: ${wallet.publicKey.slice(0, 8)}...`,
+      });
       onWalletCreated(wallet);
-    } catch (error) {
+    } catch (err: any) {
+      console.error("Failed to create wallet:", err);
+      setError(err.message || "Failed to create wallet");
       toast({
         title: "Error",
-        description: "Failed to create wallet",
+        description: err.message || "Failed to create wallet",
         variant: "destructive",
       });
     } finally {
@@ -59,22 +77,50 @@ export function WalletSetup({ onWalletCreated }: WalletSetupProps) {
 
   const handleImportWallet = async () => {
     const trimmed = importPhrase.trim().toLowerCase();
-    if (!validateSeedPhrase(trimmed)) {
+    
+    if (!trimmed) {
       toast({
-        title: "Invalid seed phrase",
-        description: "Please enter a valid 12 or 24 word seed phrase",
+        title: "Error",
+        description: "Please enter your seed phrase",
         variant: "destructive",
       });
       return;
     }
+
+    const wordCount = trimmed.split(/\s+/).length;
+    if (wordCount !== 12 && wordCount !== 24) {
+      toast({
+        title: "Invalid seed phrase",
+        description: "Please enter a 12 or 24 word seed phrase",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!validateSeedPhrase(trimmed)) {
+      toast({
+        title: "Invalid seed phrase",
+        description: "The seed phrase contains invalid words. Please check and try again.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     setIsLoading(true);
+    setError(null);
     try {
       const wallet = await createWallet(trimmed);
+      toast({
+        title: "Wallet imported!",
+        description: `Address: ${wallet.publicKey.slice(0, 8)}...`,
+      });
       onWalletCreated(wallet);
-    } catch (error) {
+    } catch (err: any) {
+      console.error("Failed to import wallet:", err);
+      setError(err.message || "Failed to import wallet");
       toast({
         title: "Error",
-        description: "Failed to import wallet",
+        description: err.message || "Failed to import wallet",
         variant: "destructive",
       });
     } finally {
@@ -98,9 +144,13 @@ export function WalletSetup({ onWalletCreated }: WalletSetupProps) {
             <h1 className="text-3xl font-display font-bold text-gradient-gold mb-2">
               Royal Wallet
             </h1>
-            <p className="text-muted-foreground mb-8">
+            <p className="text-muted-foreground mb-2">
               Your secure gateway to the Solana kingdom
             </p>
+            <div className="flex items-center justify-center gap-2 text-sm text-primary mb-8">
+              <Globe className="w-4 h-4" />
+              <span>Connected to Solana Network</span>
+            </div>
 
             <div className="space-y-4">
               <Button
@@ -205,6 +255,12 @@ export function WalletSetup({ onWalletCreated }: WalletSetupProps) {
               </div>
             </div>
 
+            {error && (
+              <div className="bg-destructive/10 border border-destructive/30 rounded-xl p-3 mb-4">
+                <p className="text-sm text-destructive">{error}</p>
+              </div>
+            )}
+
             <label className="flex items-center gap-3 mb-6 cursor-pointer group">
               <input
                 type="checkbox"
@@ -228,9 +284,9 @@ export function WalletSetup({ onWalletCreated }: WalletSetupProps) {
                 variant="royal"
                 className="flex-1"
                 onClick={handleConfirmCreate}
-                disabled={isLoading}
+                disabled={isLoading || !confirmed}
               >
-                {isLoading ? "Creating..." : "Continue"}
+                {isLoading ? "Creating Wallet..." : "Continue"}
               </Button>
             </div>
           </div>
@@ -250,19 +306,32 @@ export function WalletSetup({ onWalletCreated }: WalletSetupProps) {
               </div>
             </div>
 
-            <div className="mb-6">
+            <div className="mb-4">
               <textarea
                 value={importPhrase}
                 onChange={(e) => setImportPhrase(e.target.value)}
                 placeholder="Enter your seed phrase, separated by spaces..."
                 className="w-full h-32 bg-secondary/50 border border-border rounded-xl p-4 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent resize-none"
               />
+              <p className="text-xs text-muted-foreground mt-2">
+                Words: {importPhrase.trim() ? importPhrase.trim().split(/\s+/).length : 0} (12 or 24 required)
+              </p>
             </div>
+
+            {error && (
+              <div className="bg-destructive/10 border border-destructive/30 rounded-xl p-3 mb-4">
+                <p className="text-sm text-destructive">{error}</p>
+              </div>
+            )}
 
             <div className="flex gap-3">
               <Button
                 variant="ghost"
-                onClick={() => setStep("welcome")}
+                onClick={() => {
+                  setStep("welcome");
+                  setImportPhrase("");
+                  setError(null);
+                }}
               >
                 Back
               </Button>
