@@ -21,6 +21,7 @@ import {
   RefreshCw,
   Droplets,
   Globe,
+  ArrowLeftRight,
 } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { SendModal } from "./SendModal";
@@ -29,13 +30,14 @@ import { StakingPanel } from "./StakingPanel";
 import { SettingsPanel } from "./SettingsPanel";
 import { CreditScoreVisualizer } from "./CreditScoreVisualizer";
 import { PortfolioDashboard } from "./PortfolioDashboard";
+import { SwapPanel } from "./SwapPanel";
 
 interface DashboardProps {
   wallet: WalletData;
   onLogout: () => void;
 }
 
-type Tab = "wallet" | "portfolio" | "credit" | "staking" | "settings";
+type Tab = "wallet" | "swap" | "portfolio" | "credit" | "staking" | "settings";
 
 export function Dashboard({ wallet, onLogout }: DashboardProps) {
   const [activeTab, setActiveTab] = useState<Tab>("wallet");
@@ -170,6 +172,7 @@ export function Dashboard({ wallet, onLogout }: DashboardProps) {
         <nav className="flex gap-2 mb-6 overflow-x-auto pb-2">
           {[
             { id: "wallet", icon: Wallet, label: "Wallet" },
+            { id: "swap", icon: ArrowLeftRight, label: "Swap" },
             { id: "portfolio", icon: PieChart, label: "Portfolio" },
             { id: "credit", icon: Shield, label: "Credit Score" },
             { id: "staking", icon: Landmark, label: "Staking" },
@@ -290,12 +293,14 @@ export function Dashboard({ wallet, onLogout }: DashboardProps) {
           </div>
         )}
 
+        {activeTab === "swap" && <SwapPanel wallet={wallet} onSuccess={fetchBalance} />}
+
         {activeTab === "portfolio" && <PortfolioDashboard wallet={wallet} />}
 
         {activeTab === "credit" && <CreditScoreVisualizer wallet={wallet} />}
 
         {activeTab === "staking" && (
-          <StakingPanel balance={solBalance} stakedAmount={0} rewards={0} />
+          <StakingPanel wallet={wallet} balance={solBalance} onSuccess={fetchBalance} />
         )}
 
         {activeTab === "settings" && (
