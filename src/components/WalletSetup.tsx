@@ -1,15 +1,27 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { CrownIcon } from "./CrownIcon";
 import { generateSeedPhrase, validateSeedPhrase, createWallet, WalletData } from "@/lib/wallet";
-import { Shield, Key, Import, Eye, EyeOff, Copy, Check, AlertTriangle, Globe } from "lucide-react";
+import { 
+  isPasskeySupported, 
+  createPasskeyWallet, 
+  authenticatePasskey,
+  encryptWithPasskey,
+  savePasskeyWallet,
+  loadPasskeyWallet,
+  hasPasskeyWallet,
+  arrayBufferToBase64,
+  StoredPasskeyWallet,
+} from "@/lib/passkey";
+import { Shield, Key, Import, Eye, EyeOff, Copy, Check, AlertTriangle, Globe, Fingerprint, Loader2 } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
+import bs58 from "bs58";
 
 interface WalletSetupProps {
   onWalletCreated: (wallet: WalletData) => void;
 }
 
-type SetupStep = "welcome" | "create" | "import" | "confirm" | "complete";
+type SetupStep = "welcome" | "create" | "import" | "passkey-create" | "passkey-import" | "passkey-unlock";
 
 export function WalletSetup({ onWalletCreated }: WalletSetupProps) {
   const [step, setStep] = useState<SetupStep>("welcome");
@@ -20,6 +32,21 @@ export function WalletSetup({ onWalletCreated }: WalletSetupProps) {
   const [confirmed, setConfirmed] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [passkeySupported, setPasskeySupported] = useState(false);
+  const [existingPasskeyWallet, setExistingPasskeyWallet] = useState<StoredPasskeyWallet | null>(null);
+
+  useEffect(() => {
+    const checkPasskey = async () => {
+      const supported = await isPasskeySupported();
+      setPasskeySupported(supported);
+      
+      if (supported && hasPasskeyWallet()) {
+        const wallet = loadPasskeyWallet();
+        setExistingPasskeyWallet(wallet);
+      }
+    };
+    checkPasskey();
+  }, []);
 
   const handleCreateWallet = () => {
     try {
@@ -128,6 +155,208 @@ export function WalletSetup({ onWalletCreated }: WalletSetupProps) {
     }
   };
 
+  // Create wallet directly from passkey
+  const handlePasskeyCreate = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const result = await createPasskeyWallet();
+      if (!result) {
+        throw new Error("Failed to create passkey. Please try again.");
+      }
+
+      const { credential, keypair } = result;
+      
+      // Now we need to authenticate to get a signature for encryption
+      const auth = await authenticatePasskey(credential.id);
+      if (!auth) {
+        throw new Error("Failed to authenticate passkey");
+      }
+
+      // Encrypt the secret key with the passkey signature
+      const secretKeyBase58 = bs58.encode(keypair.secretKey);
+      const encryptedSecretKey = await encryptWithPasskey(secretKeyBase58, auth.signature);
+
+      // Save passkey wallet to localStorage
+      const passkeyWallet: StoredPasskeyWallet = {
+        credentialId: credential.id,
+        publicKey: keypair.publicKey.toBase58(),
+        encryptedSecretKey,
+        createdAt: Date.now(),
+      };
+      savePasskeyWallet(passkeyWallet);
+
+      // Create wallet data for the app
+      const walletData: WalletData = {
+        publicKey: keypair.publicKey.toBase58(),
+        secretKey: secretKeyBase58,
+        encryptedSeedPhrase: '',
+        createdAt: Date.now(),
+        passkeyEnabled: true,
+        passkeyCredentialId: credential.id,
+      };
+
+      toast({
+        title: "Passkey wallet created!",
+        description: `Address: ${keypair.publicKey.toBase58().slice(0, 8)}...`,
+      });
+      onWalletCreated(walletData);
+    } catch (err: any) {
+      console.error("Passkey creation failed:", err);
+      setError(err.message || "Failed to create passkey wallet");
+      toast({
+        title: "Error",
+        description: err.message || "Failed to create passkey wallet",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Import existing wallet and secure with passkey
+  const handlePasskeyImport = async () => {
+    const trimmed = importPhrase.trim().toLowerCase();
+    
+    if (!trimmed) {
+      toast({
+        title: "Error",
+        description: "Please enter your seed phrase",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const wordCount = trimmed.split(/\s+/).length;
+    if (wordCount !== 12 && wordCount !== 24) {
+      toast({
+        title: "Invalid seed phrase",
+        description: "Please enter a 12 or 24 word seed phrase",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!validateSeedPhrase(trimmed)) {
+      toast({
+        title: "Invalid seed phrase",
+        description: "Invalid words in seed phrase",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+    try {
+      // Create passkey credential
+      const result = await createPasskeyWallet();
+      if (!result) {
+        throw new Error("Failed to create passkey");
+      }
+
+      // Authenticate to get signature for encryption
+      const auth = await authenticatePasskey(result.credential.id);
+      if (!auth) {
+        throw new Error("Failed to authenticate passkey");
+      }
+
+      // Derive keypair from seed phrase (not from passkey)
+      const wallet = await createWallet(trimmed);
+      
+      // Encrypt both secret key and seed phrase with passkey
+      const encryptedSecretKey = await encryptWithPasskey(wallet.secretKey, auth.signature);
+      const encryptedSeedPhrase = await encryptWithPasskey(trimmed, auth.signature);
+
+      // Save passkey wallet
+      const passkeyWallet: StoredPasskeyWallet = {
+        credentialId: result.credential.id,
+        publicKey: wallet.publicKey,
+        encryptedSecretKey,
+        encryptedSeedPhrase,
+        createdAt: Date.now(),
+      };
+      savePasskeyWallet(passkeyWallet);
+
+      // Update wallet data
+      const walletData: WalletData = {
+        ...wallet,
+        passkeyEnabled: true,
+        passkeyCredentialId: result.credential.id,
+      };
+
+      toast({
+        title: "Wallet imported with passkey!",
+        description: `Address: ${wallet.publicKey.slice(0, 8)}...`,
+      });
+      onWalletCreated(walletData);
+    } catch (err: any) {
+      console.error("Passkey import failed:", err);
+      setError(err.message || "Failed to import wallet with passkey");
+      toast({
+        title: "Error",
+        description: err.message || "Failed to import wallet with passkey",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Unlock existing passkey wallet
+  const handlePasskeyUnlock = async () => {
+    if (!existingPasskeyWallet) return;
+
+    setIsLoading(true);
+    setError(null);
+    try {
+      const auth = await authenticatePasskey(existingPasskeyWallet.credentialId);
+      if (!auth) {
+        throw new Error("Passkey authentication failed");
+      }
+
+      // Decrypt the secret key
+      const { decryptWithPasskey } = await import("@/lib/passkey");
+      const secretKey = await decryptWithPasskey(
+        existingPasskeyWallet.encryptedSecretKey,
+        auth.signature
+      );
+
+      let seedPhrase = '';
+      if (existingPasskeyWallet.encryptedSeedPhrase) {
+        seedPhrase = await decryptWithPasskey(
+          existingPasskeyWallet.encryptedSeedPhrase,
+          auth.signature
+        );
+      }
+
+      const walletData: WalletData = {
+        publicKey: existingPasskeyWallet.publicKey,
+        secretKey,
+        encryptedSeedPhrase: seedPhrase,
+        createdAt: existingPasskeyWallet.createdAt,
+        passkeyEnabled: true,
+        passkeyCredentialId: existingPasskeyWallet.credentialId,
+      };
+
+      toast({
+        title: "Wallet unlocked!",
+        description: `Welcome back!`,
+      });
+      onWalletCreated(walletData);
+    } catch (err: any) {
+      console.error("Passkey unlock failed:", err);
+      setError(err.message || "Failed to unlock wallet");
+      toast({
+        title: "Unlock failed",
+        description: "Could not authenticate. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-background flex items-center justify-center p-4 relative overflow-hidden">
       {/* Background effects */}
@@ -147,36 +376,244 @@ export function WalletSetup({ onWalletCreated }: WalletSetupProps) {
             <p className="text-muted-foreground mb-2">
               Your secure gateway to the Solana kingdom
             </p>
-            <div className="flex items-center justify-center gap-2 text-sm text-primary mb-8">
+            <div className="flex items-center justify-center gap-2 text-sm text-primary mb-6">
               <Globe className="w-4 h-4" />
               <span>Connected to Solana Network</span>
             </div>
 
-            <div className="space-y-4">
+            {/* Passkey unlock for existing wallet */}
+            {existingPasskeyWallet && (
+              <div className="mb-6">
+                <Button
+                  variant="royal"
+                  size="xl"
+                  className="w-full mb-3"
+                  onClick={handlePasskeyUnlock}
+                  disabled={isLoading}
+                >
+                  {isLoading ? (
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                  ) : (
+                    <Fingerprint className="w-5 h-5" />
+                  )}
+                  Unlock with Passkey
+                </Button>
+                <p className="text-xs text-muted-foreground">
+                  {existingPasskeyWallet.publicKey.slice(0, 8)}...{existingPasskeyWallet.publicKey.slice(-4)}
+                </p>
+              </div>
+            )}
+
+            {existingPasskeyWallet && (
+              <div className="relative my-6">
+                <div className="absolute inset-0 flex items-center">
+                  <div className="w-full border-t border-border" />
+                </div>
+                <div className="relative flex justify-center text-xs">
+                  <span className="bg-background px-2 text-muted-foreground">or create new</span>
+                </div>
+              </div>
+            )}
+
+            <div className="space-y-3">
+              {/* Passkey options */}
+              {passkeySupported && (
+                <>
+                  <Button
+                    variant={existingPasskeyWallet ? "glass" : "royal"}
+                    size="lg"
+                    className="w-full"
+                    onClick={() => setStep("passkey-create")}
+                  >
+                    <Fingerprint className="w-5 h-5" />
+                    Create with Passkey
+                  </Button>
+                  <Button
+                    variant="glass"
+                    size="lg"
+                    className="w-full"
+                    onClick={() => setStep("passkey-import")}
+                  >
+                    <Fingerprint className="w-5 h-5" />
+                    Import with Passkey
+                  </Button>
+                  
+                  <div className="relative my-4">
+                    <div className="absolute inset-0 flex items-center">
+                      <div className="w-full border-t border-border" />
+                    </div>
+                    <div className="relative flex justify-center text-xs">
+                      <span className="bg-background px-2 text-muted-foreground">or use seed phrase</span>
+                    </div>
+                  </div>
+                </>
+              )}
+
               <Button
-                variant="royal"
-                size="xl"
+                variant={passkeySupported ? "outline" : "royal"}
+                size="lg"
                 className="w-full"
                 onClick={handleCreateWallet}
               >
                 <Key className="w-5 h-5" />
-                Create New Wallet
+                Create with Seed Phrase
               </Button>
 
               <Button
-                variant="glass"
+                variant="ghost"
                 size="lg"
                 className="w-full"
                 onClick={() => setStep("import")}
               >
                 <Import className="w-5 h-5" />
-                Import Existing Wallet
+                Import with Seed Phrase
               </Button>
             </div>
 
             <div className="mt-8 flex items-center justify-center gap-2 text-sm text-muted-foreground">
               <Shield className="w-4 h-4 text-accent" />
               <span>Military-grade encryption</span>
+            </div>
+          </div>
+        )}
+
+        {step === "passkey-create" && (
+          <div className="glass-card p-8 animate-fade-in">
+            <div className="flex items-center gap-3 mb-6">
+              <Fingerprint className="w-10 h-10 text-primary" />
+              <div>
+                <h2 className="text-xl font-display font-bold text-foreground">
+                  Create Passkey Wallet
+                </h2>
+                <p className="text-sm text-muted-foreground">
+                  Use biometrics to secure your wallet
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-4 mb-6">
+              <div className="bg-primary/10 rounded-xl p-4">
+                <div className="flex items-start gap-3">
+                  <Shield className="w-5 h-5 text-primary flex-shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-medium text-foreground">No seed phrase needed</p>
+                    <p className="text-sm text-muted-foreground">
+                      Your wallet is secured by your device's biometrics (Face ID, Touch ID, or PIN)
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-secondary/30 rounded-xl p-4">
+                <p className="text-sm text-muted-foreground">
+                  <strong className="text-foreground">Important:</strong> Your passkey is tied to this device. 
+                  If you lose access, you'll need to create a new wallet.
+                </p>
+              </div>
+            </div>
+
+            {error && (
+              <div className="bg-destructive/10 border border-destructive/30 rounded-xl p-3 mb-4">
+                <p className="text-sm text-destructive">{error}</p>
+              </div>
+            )}
+
+            <div className="flex gap-3">
+              <Button variant="ghost" onClick={() => setStep("welcome")}>
+                Back
+              </Button>
+              <Button
+                variant="royal"
+                className="flex-1"
+                onClick={handlePasskeyCreate}
+                disabled={isLoading}
+              >
+                {isLoading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Creating...
+                  </>
+                ) : (
+                  <>
+                    <Fingerprint className="w-4 h-4" />
+                    Create Wallet
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {step === "passkey-import" && (
+          <div className="glass-card p-8 animate-fade-in">
+            <div className="flex items-center gap-3 mb-6">
+              <Fingerprint className="w-10 h-10 text-primary" />
+              <div>
+                <h2 className="text-xl font-display font-bold text-foreground">
+                  Import with Passkey
+                </h2>
+                <p className="text-sm text-muted-foreground">
+                  Secure your existing wallet with biometrics
+                </p>
+              </div>
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-sm text-muted-foreground mb-2">
+                Enter your seed phrase
+              </label>
+              <textarea
+                value={importPhrase}
+                onChange={(e) => setImportPhrase(e.target.value)}
+                placeholder="Enter your 12 or 24 word seed phrase..."
+                className="w-full h-32 bg-secondary/50 border border-border rounded-xl p-4 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent resize-none"
+              />
+              <p className="text-xs text-muted-foreground mt-2">
+                Words: {importPhrase.trim() ? importPhrase.trim().split(/\s+/).length : 0}
+              </p>
+            </div>
+
+            <div className="bg-primary/10 rounded-xl p-4 mb-4">
+              <p className="text-sm text-muted-foreground">
+                Your seed phrase will be encrypted with your passkey and stored securely on this device.
+              </p>
+            </div>
+
+            {error && (
+              <div className="bg-destructive/10 border border-destructive/30 rounded-xl p-3 mb-4">
+                <p className="text-sm text-destructive">{error}</p>
+              </div>
+            )}
+
+            <div className="flex gap-3">
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  setStep("welcome");
+                  setImportPhrase("");
+                  setError(null);
+                }}
+              >
+                Back
+              </Button>
+              <Button
+                variant="royal"
+                className="flex-1"
+                onClick={handlePasskeyImport}
+                disabled={isLoading || !importPhrase.trim()}
+              >
+                {isLoading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Securing...
+                  </>
+                ) : (
+                  <>
+                    <Fingerprint className="w-4 h-4" />
+                    Import & Secure
+                  </>
+                )}
+              </Button>
             </div>
           </div>
         )}
