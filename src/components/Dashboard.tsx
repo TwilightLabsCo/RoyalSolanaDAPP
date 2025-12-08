@@ -22,6 +22,7 @@ import {
   Droplets,
   Globe,
   ArrowLeftRight,
+  Image,
 } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { SendModal } from "./SendModal";
@@ -31,13 +32,14 @@ import { SettingsPanel } from "./SettingsPanel";
 import { CreditScoreVisualizer } from "./CreditScoreVisualizer";
 import { PortfolioDashboard } from "./PortfolioDashboard";
 import { SwapPanel } from "./SwapPanel";
+import { NFTGallery } from "./NFTGallery";
 
 interface DashboardProps {
   wallet: WalletData;
   onLogout: () => void;
 }
 
-type Tab = "wallet" | "swap" | "portfolio" | "credit" | "staking" | "settings";
+type Tab = "wallet" | "swap" | "portfolio" | "credit" | "nfts" | "staking" | "settings";
 
 export function Dashboard({ wallet, onLogout }: DashboardProps) {
   const [activeTab, setActiveTab] = useState<Tab>("wallet");
@@ -174,6 +176,7 @@ export function Dashboard({ wallet, onLogout }: DashboardProps) {
             { id: "wallet", icon: Wallet, label: "Wallet" },
             { id: "swap", icon: ArrowLeftRight, label: "Swap" },
             { id: "portfolio", icon: PieChart, label: "Portfolio" },
+            { id: "nfts", icon: Image, label: "NFTs" },
             { id: "credit", icon: Shield, label: "Credit Score" },
             { id: "staking", icon: Landmark, label: "Staking" },
             { id: "settings", icon: Settings, label: "Settings" },
@@ -296,6 +299,8 @@ export function Dashboard({ wallet, onLogout }: DashboardProps) {
         {activeTab === "swap" && <SwapPanel wallet={wallet} onSuccess={fetchBalance} />}
 
         {activeTab === "portfolio" && <PortfolioDashboard wallet={wallet} />}
+
+        {activeTab === "nfts" && <NFTGallery wallet={wallet} />}
 
         {activeTab === "credit" && <CreditScoreVisualizer wallet={wallet} />}
 
