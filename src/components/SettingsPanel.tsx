@@ -1,7 +1,16 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { WalletData, updateWallet } from "@/lib/wallet";
-import { isPasskeySupported, createPasskey, arrayBufferToBase64 } from "@/lib/passkey";
+import { 
+  isPasskeySupported, 
+  createPasskeyWallet, 
+  authenticatePasskey,
+  encryptWithPasskey,
+  savePasskeyWallet,
+  arrayBufferToBase64,
+  StoredPasskeyWallet,
+  deletePasskeyWallet,
+} from "@/lib/passkey";
 import {
   Key,
   Shield,
@@ -62,25 +71,54 @@ export function SettingsPanel({ wallet, onLogout }: SettingsPanelProps) {
 
     setIsSettingUpPasskey(true);
     try {
-      const credential = await createPasskey(wallet.publicKey);
-      if (credential) {
-        const credentialId = arrayBufferToBase64(credential.rawId);
-        await updateWallet({
-          passkeyEnabled: true,
-          passkeyCredentialId: credentialId,
-        });
-        setPasskeyEnabled(true);
-        toast({
-          title: "Passkey enabled!",
-          description: "You can now use biometrics to authenticate",
-        });
-      } else {
+      // Create a new passkey credential
+      const result = await createPasskeyWallet();
+      if (!result) {
         toast({
           title: "Setup cancelled",
           description: "Passkey setup was cancelled",
           variant: "destructive",
         });
+        return;
       }
+
+      // Authenticate to get signature for encryption
+      const auth = await authenticatePasskey(result.credential.id);
+      if (!auth) {
+        toast({
+          title: "Authentication failed",
+          description: "Could not verify passkey",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // Encrypt wallet data with passkey
+      const encryptedSecretKey = await encryptWithPasskey(wallet.secretKey, auth.signature);
+      const encryptedSeedPhrase = wallet.encryptedSeedPhrase 
+        ? await encryptWithPasskey(wallet.encryptedSeedPhrase, auth.signature)
+        : undefined;
+
+      // Save passkey wallet data
+      const passkeyWallet: StoredPasskeyWallet = {
+        credentialId: result.credential.id,
+        publicKey: wallet.publicKey,
+        encryptedSecretKey,
+        encryptedSeedPhrase,
+        createdAt: Date.now(),
+      };
+      savePasskeyWallet(passkeyWallet);
+
+      const credentialId = result.credential.id;
+      await updateWallet({
+        passkeyEnabled: true,
+        passkeyCredentialId: credentialId,
+      });
+      setPasskeyEnabled(true);
+      toast({
+        title: "Passkey enabled!",
+        description: "You can now use biometrics to authenticate",
+      });
     } catch (error) {
       toast({
         title: "Error",
@@ -93,6 +131,7 @@ export function SettingsPanel({ wallet, onLogout }: SettingsPanelProps) {
   };
 
   const handleDeleteWallet = () => {
+    deletePasskeyWallet(); // Also delete passkey wallet data
     onLogout();
     toast({
       title: "Wallet deleted",
