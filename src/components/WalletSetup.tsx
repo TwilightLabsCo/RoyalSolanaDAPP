@@ -1,16 +1,20 @@
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { CrownIcon } from "./CrownIcon";
-import { generateSeedPhrase, validateSeedPhrase, createWallet, WalletData } from "@/lib/wallet";
+import { generateSeedPhrase, validateSeedPhrase, createWallet, WalletData, deriveKeypair } from "@/lib/wallet";
 import { 
   isPasskeySupported, 
   createPasskeyWallet, 
   authenticatePasskey,
-  encryptWithPasskey,
+  encryptWalletKey,
+  encryptWithWalletKey,
+  decryptWalletKey,
+  decryptWithWalletKey,
   savePasskeyWallet,
   loadPasskeyWallet,
   hasPasskeyWallet,
   arrayBufferToBase64,
+  base64ToArrayBuffer,
   StoredPasskeyWallet,
 } from "@/lib/passkey";
 import { Shield, Key, Import, Eye, EyeOff, Copy, Check, AlertTriangle, Globe, Fingerprint, Loader2 } from "lucide-react";
@@ -155,7 +159,7 @@ export function WalletSetup({ onWalletCreated }: WalletSetupProps) {
     }
   };
 
-  // Create wallet directly from passkey
+  // Create wallet directly from passkey - standalone like Trust/Coinbase wallet
   const handlePasskeyCreate = async () => {
     setIsLoading(true);
     setError(null);
@@ -165,23 +169,26 @@ export function WalletSetup({ onWalletCreated }: WalletSetupProps) {
         throw new Error("Failed to create passkey. Please try again.");
       }
 
-      const { credential, keypair } = result;
+      const { credential, keypair, walletKey, salt } = result;
       
-      // Now we need to authenticate to get a signature for encryption
-      const auth = await authenticatePasskey(credential.id);
-      if (!auth) {
-        throw new Error("Failed to authenticate passkey");
-      }
+      // Encrypt the wallet key with the credential-derived key
+      const encryptedWalletKey = await encryptWalletKey(
+        walletKey,
+        credential.rawId,
+        salt
+      );
 
-      // Encrypt the secret key with the passkey signature
+      // Encrypt the secret key with the wallet key
       const secretKeyBase58 = bs58.encode(keypair.secretKey);
-      const encryptedSecretKey = await encryptWithPasskey(secretKeyBase58, auth.signature);
+      const encryptedSecretKey = await encryptWithWalletKey(secretKeyBase58, walletKey);
 
       // Save passkey wallet to localStorage
       const passkeyWallet: StoredPasskeyWallet = {
         credentialId: credential.id,
         publicKey: keypair.publicKey.toBase58(),
+        encryptedWalletKey,
         encryptedSecretKey,
+        salt: arrayBufferToBase64(salt.buffer),
         createdAt: Date.now(),
       };
       savePasskeyWallet(passkeyWallet);
@@ -249,45 +256,53 @@ export function WalletSetup({ onWalletCreated }: WalletSetupProps) {
     setIsLoading(true);
     setError(null);
     try {
-      // Create passkey credential
+      // Create passkey credential with wallet key
       const result = await createPasskeyWallet();
       if (!result) {
         throw new Error("Failed to create passkey");
       }
 
-      // Authenticate to get signature for encryption
-      const auth = await authenticatePasskey(result.credential.id);
-      if (!auth) {
-        throw new Error("Failed to authenticate passkey");
-      }
+      const { credential, walletKey, salt } = result;
 
       // Derive keypair from seed phrase (not from passkey)
-      const wallet = await createWallet(trimmed);
+      const keypair = deriveKeypair(trimmed);
       
-      // Encrypt both secret key and seed phrase with passkey
-      const encryptedSecretKey = await encryptWithPasskey(wallet.secretKey, auth.signature);
-      const encryptedSeedPhrase = await encryptWithPasskey(trimmed, auth.signature);
+      // Encrypt the wallet key with credential-derived key
+      const encryptedWalletKey = await encryptWalletKey(
+        walletKey,
+        credential.rawId,
+        salt
+      );
+      
+      // Encrypt both secret key and seed phrase with wallet key
+      const encryptedSecretKey = await encryptWithWalletKey(bs58.encode(keypair.secretKey), walletKey);
+      const encryptedSeedPhrase = await encryptWithWalletKey(trimmed, walletKey);
 
       // Save passkey wallet
       const passkeyWallet: StoredPasskeyWallet = {
-        credentialId: result.credential.id,
-        publicKey: wallet.publicKey,
+        credentialId: credential.id,
+        publicKey: keypair.publicKey.toBase58(),
+        encryptedWalletKey,
         encryptedSecretKey,
         encryptedSeedPhrase,
+        salt: arrayBufferToBase64(salt.buffer),
         createdAt: Date.now(),
       };
       savePasskeyWallet(passkeyWallet);
 
-      // Update wallet data
+      // Create wallet data
       const walletData: WalletData = {
-        ...wallet,
+        publicKey: keypair.publicKey.toBase58(),
+        secretKey: bs58.encode(keypair.secretKey),
+        encryptedSeedPhrase: trimmed,
+        createdAt: Date.now(),
         passkeyEnabled: true,
-        passkeyCredentialId: result.credential.id,
+        passkeyCredentialId: credential.id,
       };
 
       toast({
         title: "Wallet imported with passkey!",
-        description: `Address: ${wallet.publicKey.slice(0, 8)}...`,
+        description: `Address: ${keypair.publicKey.toBase58().slice(0, 8)}...`,
       });
       onWalletCreated(walletData);
     } catch (err: any) {
@@ -310,23 +325,33 @@ export function WalletSetup({ onWalletCreated }: WalletSetupProps) {
     setIsLoading(true);
     setError(null);
     try {
+      // Authenticate with passkey
       const auth = await authenticatePasskey(existingPasskeyWallet.credentialId);
       if (!auth) {
         throw new Error("Passkey authentication failed");
       }
 
-      // Decrypt the secret key
-      const { decryptWithPasskey } = await import("@/lib/passkey");
-      const secretKey = await decryptWithPasskey(
+      // Recover salt
+      const salt = new Uint8Array(base64ToArrayBuffer(existingPasskeyWallet.salt));
+      
+      // Decrypt the wallet key using credential ID
+      const walletKey = await decryptWalletKey(
+        existingPasskeyWallet.encryptedWalletKey,
+        auth.credential.rawId,
+        salt
+      );
+
+      // Decrypt the secret key with wallet key
+      const secretKey = await decryptWithWalletKey(
         existingPasskeyWallet.encryptedSecretKey,
-        auth.signature
+        walletKey
       );
 
       let seedPhrase = '';
       if (existingPasskeyWallet.encryptedSeedPhrase) {
-        seedPhrase = await decryptWithPasskey(
+        seedPhrase = await decryptWithWalletKey(
           existingPasskeyWallet.encryptedSeedPhrase,
-          auth.signature
+          walletKey
         );
       }
 

@@ -1,4 +1,5 @@
 // WebAuthn Passkey utilities for Royal Wallet
+// Implements standalone passkey wallet like Trust Wallet / Coinbase Base Wallet
 import { Keypair } from '@solana/web3.js';
 
 export interface PasskeyCredential {
@@ -11,8 +12,13 @@ export interface PasskeyCredential {
 export interface StoredPasskeyWallet {
   credentialId: string;
   publicKey: string;
+  // Wallet encryption key encrypted with a key derived from credential
+  encryptedWalletKey: string;
+  // The actual secret key encrypted with the wallet key
   encryptedSecretKey: string;
   encryptedSeedPhrase?: string;
+  // Salt for key derivation
+  salt: string;
   createdAt: number;
 }
 
@@ -33,10 +39,31 @@ export async function isPasskeySupported(): Promise<boolean> {
   }
 }
 
+// Generate a deterministic key from credential ID and salt
+async function deriveKeyFromCredential(
+  credentialId: ArrayBuffer,
+  salt: Uint8Array
+): Promise<CryptoKey> {
+  const combined = new Uint8Array([
+    ...new Uint8Array(credentialId),
+    ...salt,
+  ]);
+  const keyMaterial = await crypto.subtle.digest('SHA-256', combined);
+  return crypto.subtle.importKey(
+    'raw',
+    keyMaterial,
+    { name: 'AES-GCM' },
+    false,
+    ['encrypt', 'decrypt', 'wrapKey', 'unwrapKey']
+  );
+}
+
 // Create a new passkey and derive a wallet from it
 export async function createPasskeyWallet(): Promise<{
   credential: PasskeyCredential;
   keypair: Keypair;
+  walletKey: CryptoKey;
+  salt: Uint8Array;
 } | null> {
   try {
     const userId = crypto.randomUUID();
@@ -73,15 +100,26 @@ export async function createPasskeyWallet(): Promise<{
 
     const response = credential.response as AuthenticatorAttestationResponse;
     
-    // Derive wallet seed from credential ID + authenticator data
+    // Generate a random salt for this wallet
+    const salt = crypto.getRandomValues(new Uint8Array(32));
+    
+    // Derive wallet seed from credential ID + authenticator data + salt
     const seedMaterial = new Uint8Array([
       ...new Uint8Array(credential.rawId),
       ...new Uint8Array(response.getAuthenticatorData?.() || response.clientDataJSON),
+      ...salt,
     ]);
     
-    // Hash to get 32-byte seed
+    // Hash to get 32-byte seed for the keypair
     const seedHash = await crypto.subtle.digest('SHA-256', seedMaterial);
     const keypair = Keypair.fromSeed(new Uint8Array(seedHash));
+
+    // Generate a random wallet encryption key
+    const walletKey = await crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt']
+    );
 
     return {
       credential: {
@@ -91,6 +129,8 @@ export async function createPasskeyWallet(): Promise<{
         publicKey: response.getPublicKey?.() || undefined,
       },
       keypair,
+      walletKey,
+      salt,
     };
   } catch (error) {
     console.error('Passkey wallet creation failed:', error);
@@ -98,10 +138,9 @@ export async function createPasskeyWallet(): Promise<{
   }
 }
 
-// Authenticate with passkey and get signing material for decryption
+// Authenticate with passkey - returns the credential for key derivation
 export async function authenticatePasskey(credentialId?: string): Promise<{
   credential: PasskeyCredential;
-  signature: ArrayBuffer;
 } | null> {
   try {
     const challenge = crypto.getRandomValues(new Uint8Array(32));
@@ -113,7 +152,6 @@ export async function authenticatePasskey(credentialId?: string): Promise<{
       timeout: 60000,
     };
 
-    // If we have a specific credential ID, use it
     if (credentialId) {
       options.allowCredentials = [
         {
@@ -129,15 +167,12 @@ export async function authenticatePasskey(credentialId?: string): Promise<{
 
     if (!assertion) return null;
 
-    const response = assertion.response as AuthenticatorAssertionResponse;
-
     return {
       credential: {
         id: assertion.id,
         rawId: assertion.rawId,
         type: 'public-key',
       },
-      signature: response.signature,
     };
   } catch (error) {
     console.error('Passkey authentication failed:', error);
@@ -145,34 +180,67 @@ export async function authenticatePasskey(credentialId?: string): Promise<{
   }
 }
 
-// Derive encryption key from passkey signature
-async function deriveKeyFromSignature(signature: ArrayBuffer): Promise<CryptoKey> {
-  const keyMaterial = await crypto.subtle.digest('SHA-256', signature);
-  return crypto.subtle.importKey(
+// Encrypt the wallet key with the credential-derived key
+export async function encryptWalletKey(
+  walletKey: CryptoKey,
+  credentialId: ArrayBuffer,
+  salt: Uint8Array
+): Promise<string> {
+  const wrapKey = await deriveKeyFromCredential(credentialId, salt);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  
+  const wrappedKey = await crypto.subtle.wrapKey(
     'raw',
-    keyMaterial,
-    { name: 'AES-GCM' },
-    false,
+    walletKey,
+    wrapKey,
+    { name: 'AES-GCM', iv }
+  );
+
+  const combined = new Uint8Array(iv.length + wrappedKey.byteLength);
+  combined.set(iv, 0);
+  combined.set(new Uint8Array(wrappedKey), iv.length);
+  
+  return arrayBufferToBase64(combined.buffer);
+}
+
+// Decrypt the wallet key with the credential-derived key
+export async function decryptWalletKey(
+  encryptedWalletKey: string,
+  credentialId: ArrayBuffer,
+  salt: Uint8Array
+): Promise<CryptoKey> {
+  const wrapKey = await deriveKeyFromCredential(credentialId, salt);
+  const combined = base64ToArrayBuffer(encryptedWalletKey);
+  const combinedArray = new Uint8Array(combined);
+  
+  const iv = combinedArray.slice(0, 12);
+  const wrappedKey = combinedArray.slice(12);
+  
+  return crypto.subtle.unwrapKey(
+    'raw',
+    wrappedKey,
+    wrapKey,
+    { name: 'AES-GCM', iv },
+    { name: 'AES-GCM', length: 256 },
+    true,
     ['encrypt', 'decrypt']
   );
 }
 
-// Encrypt data with passkey-derived key
-export async function encryptWithPasskey(
+// Encrypt data with the wallet key
+export async function encryptWithWalletKey(
   data: string,
-  signature: ArrayBuffer
+  walletKey: CryptoKey
 ): Promise<string> {
-  const key = await deriveKeyFromSignature(signature);
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const encodedData = new TextEncoder().encode(data);
   
   const encrypted = await crypto.subtle.encrypt(
     { name: 'AES-GCM', iv },
-    key,
+    walletKey,
     encodedData
   );
 
-  // Combine IV + encrypted data
   const combined = new Uint8Array(iv.length + encrypted.byteLength);
   combined.set(iv, 0);
   combined.set(new Uint8Array(encrypted), iv.length);
@@ -180,12 +248,11 @@ export async function encryptWithPasskey(
   return arrayBufferToBase64(combined.buffer);
 }
 
-// Decrypt data with passkey-derived key
-export async function decryptWithPasskey(
+// Decrypt data with the wallet key
+export async function decryptWithWalletKey(
   encryptedData: string,
-  signature: ArrayBuffer
+  walletKey: CryptoKey
 ): Promise<string> {
-  const key = await deriveKeyFromSignature(signature);
   const combined = base64ToArrayBuffer(encryptedData);
   const combinedArray = new Uint8Array(combined);
   
@@ -194,7 +261,7 @@ export async function decryptWithPasskey(
   
   const decrypted = await crypto.subtle.decrypt(
     { name: 'AES-GCM', iv },
-    key,
+    walletKey,
     data
   );
 
@@ -228,7 +295,7 @@ export function hasPasskeyWallet(): boolean {
 }
 
 // Helper functions
-export function arrayBufferToBase64(buffer: ArrayBuffer): string {
+export function arrayBufferToBase64(buffer: ArrayBuffer | ArrayBufferLike): string {
   const bytes = new Uint8Array(buffer);
   let binary = '';
   for (let i = 0; i < bytes.byteLength; i++) {
@@ -244,4 +311,60 @@ export function base64ToArrayBuffer(base64: string): ArrayBuffer {
     bytes[i] = binary.charCodeAt(i);
   }
   return bytes.buffer;
+}
+
+// Legacy compatibility - these are deprecated but kept for migration
+export async function encryptWithPasskey(
+  data: string,
+  signature: ArrayBuffer
+): Promise<string> {
+  const keyMaterial = await crypto.subtle.digest('SHA-256', signature);
+  const key = await crypto.subtle.importKey(
+    'raw',
+    keyMaterial,
+    { name: 'AES-GCM' },
+    false,
+    ['encrypt', 'decrypt']
+  );
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encodedData = new TextEncoder().encode(data);
+  
+  const encrypted = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    key,
+    encodedData
+  );
+
+  const combined = new Uint8Array(iv.length + encrypted.byteLength);
+  combined.set(iv, 0);
+  combined.set(new Uint8Array(encrypted), iv.length);
+  
+  return arrayBufferToBase64(combined.buffer);
+}
+
+export async function decryptWithPasskey(
+  encryptedData: string,
+  signature: ArrayBuffer
+): Promise<string> {
+  const keyMaterial = await crypto.subtle.digest('SHA-256', signature);
+  const key = await crypto.subtle.importKey(
+    'raw',
+    keyMaterial,
+    { name: 'AES-GCM' },
+    false,
+    ['encrypt', 'decrypt']
+  );
+  const combined = base64ToArrayBuffer(encryptedData);
+  const combinedArray = new Uint8Array(combined);
+  
+  const iv = combinedArray.slice(0, 12);
+  const data = combinedArray.slice(12);
+  
+  const decrypted = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv },
+    key,
+    data
+  );
+
+  return new TextDecoder().decode(decrypted);
 }
