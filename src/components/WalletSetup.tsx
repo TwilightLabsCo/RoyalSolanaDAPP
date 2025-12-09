@@ -221,96 +221,67 @@ export function WalletSetup({ onWalletCreated }: WalletSetupProps) {
     }
   };
 
-  // Import existing wallet and secure with passkey
+  // Import/load wallet with existing passkey (seedless) - like Trust/Coinbase wallet
   const handlePasskeyImport = async () => {
-    const trimmed = importPhrase.trim().toLowerCase();
-    
-    if (!trimmed) {
-      toast({
-        title: "Error",
-        description: "Please enter your seed phrase",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    const wordCount = trimmed.split(/\s+/).length;
-    if (wordCount !== 12 && wordCount !== 24) {
-      toast({
-        title: "Invalid seed phrase",
-        description: "Please enter a 12 or 24 word seed phrase",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    if (!validateSeedPhrase(trimmed)) {
-      toast({
-        title: "Invalid seed phrase",
-        description: "Invalid words in seed phrase",
-        variant: "destructive",
-      });
-      return;
-    }
-
     setIsLoading(true);
     setError(null);
     try {
-      // Create passkey credential with wallet key
-      const result = await createPasskeyWallet();
-      if (!result) {
-        throw new Error("Failed to create passkey");
+      // Authenticate with any available passkey (no specific credential ID)
+      const auth = await authenticatePasskey();
+      if (!auth) {
+        throw new Error("Passkey authentication failed or cancelled");
       }
 
-      const { credential, walletKey, salt } = result;
-
-      // Derive keypair from seed phrase (not from passkey)
-      const keypair = deriveKeypair(trimmed);
+      // Check if we have stored wallet data for this passkey
+      const storedWallet = loadPasskeyWallet();
       
-      // Encrypt the wallet key with credential-derived key
-      const encryptedWalletKey = await encryptWalletKey(
-        walletKey,
-        credential.rawId,
-        salt
-      );
-      
-      // Encrypt both secret key and seed phrase with wallet key
-      const encryptedSecretKey = await encryptWithWalletKey(bs58.encode(keypair.secretKey), walletKey);
-      const encryptedSeedPhrase = await encryptWithWalletKey(trimmed, walletKey);
+      if (storedWallet && storedWallet.credentialId === auth.credential.id) {
+        // Found matching stored wallet - decrypt it
+        const salt = new Uint8Array(base64ToArrayBuffer(storedWallet.salt));
+        
+        const walletKey = await decryptWalletKey(
+          storedWallet.encryptedWalletKey,
+          auth.credential.rawId,
+          salt
+        );
 
-      // Save passkey wallet
-      const passkeyWallet: StoredPasskeyWallet = {
-        credentialId: credential.id,
-        publicKey: keypair.publicKey.toBase58(),
-        encryptedWalletKey,
-        encryptedSecretKey,
-        encryptedSeedPhrase,
-        salt: arrayBufferToBase64(salt.buffer),
-        createdAt: Date.now(),
-      };
-      savePasskeyWallet(passkeyWallet);
+        const secretKey = await decryptWithWalletKey(
+          storedWallet.encryptedSecretKey,
+          walletKey
+        );
 
-      // Create wallet data
-      const walletData: WalletData = {
-        publicKey: keypair.publicKey.toBase58(),
-        secretKey: bs58.encode(keypair.secretKey),
-        encryptedSeedPhrase: trimmed,
-        createdAt: Date.now(),
-        passkeyEnabled: true,
-        passkeyCredentialId: credential.id,
-      };
+        let seedPhrase = '';
+        if (storedWallet.encryptedSeedPhrase) {
+          seedPhrase = await decryptWithWalletKey(
+            storedWallet.encryptedSeedPhrase,
+            walletKey
+          );
+        }
 
-      toast({
-        title: "Wallet imported with passkey!",
-        description: `Address: ${keypair.publicKey.toBase58().slice(0, 8)}...`,
-      });
-      onWalletCreated(walletData);
+        const walletData: WalletData = {
+          publicKey: storedWallet.publicKey,
+          secretKey,
+          encryptedSeedPhrase: seedPhrase,
+          createdAt: storedWallet.createdAt,
+          passkeyEnabled: true,
+          passkeyCredentialId: storedWallet.credentialId,
+        };
+
+        toast({
+          title: "Wallet loaded!",
+          description: `Address: ${storedWallet.publicKey.slice(0, 8)}...`,
+        });
+        onWalletCreated(walletData);
+      } else {
+        // No stored wallet for this passkey - inform user
+        throw new Error("No wallet found for this passkey. Please create a new wallet or use a different passkey.");
+      }
     } catch (err: any) {
       console.error("Passkey import failed:", err);
-      setError(err.message || "Failed to import wallet with passkey");
+      setError(err.message || "Failed to load wallet with passkey");
       toast({
-        title: "Error",
-        description: err.message || "Failed to import wallet with passkey",
+        title: "Import failed",
+        description: err.message || "No wallet found for this passkey",
         variant: "destructive",
       });
     } finally {
@@ -460,7 +431,7 @@ export function WalletSetup({ onWalletCreated }: WalletSetupProps) {
                     onClick={() => setStep("passkey-import")}
                   >
                     <Fingerprint className="w-5 h-5" />
-                    Import with Passkey
+                    Load with Passkey
                   </Button>
                   
                   <div className="relative my-4">
@@ -575,33 +546,32 @@ export function WalletSetup({ onWalletCreated }: WalletSetupProps) {
               <Fingerprint className="w-10 h-10 text-primary" />
               <div>
                 <h2 className="text-xl font-display font-bold text-foreground">
-                  Import with Passkey
+                  Load with Passkey
                 </h2>
                 <p className="text-sm text-muted-foreground">
-                  Secure your existing wallet with biometrics
+                  Access your wallet using biometrics
                 </p>
               </div>
             </div>
 
-            <div className="mb-4">
-              <label className="block text-sm text-muted-foreground mb-2">
-                Enter your seed phrase
-              </label>
-              <textarea
-                value={importPhrase}
-                onChange={(e) => setImportPhrase(e.target.value)}
-                placeholder="Enter your 12 or 24 word seed phrase..."
-                className="w-full h-32 bg-secondary/50 border border-border rounded-xl p-4 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent resize-none"
-              />
-              <p className="text-xs text-muted-foreground mt-2">
-                Words: {importPhrase.trim() ? importPhrase.trim().split(/\s+/).length : 0}
-              </p>
-            </div>
+            <div className="space-y-4 mb-6">
+              <div className="bg-primary/10 rounded-xl p-4">
+                <div className="flex items-start gap-3">
+                  <Shield className="w-5 h-5 text-primary flex-shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-medium text-foreground">Seedless Access</p>
+                    <p className="text-sm text-muted-foreground">
+                      Use your synced passkey (iCloud Keychain, Google Password Manager) to access your wallet on this device.
+                    </p>
+                  </div>
+                </div>
+              </div>
 
-            <div className="bg-primary/10 rounded-xl p-4 mb-4">
-              <p className="text-sm text-muted-foreground">
-                Your seed phrase will be encrypted with your passkey and stored securely on this device.
-              </p>
+              <div className="bg-secondary/30 rounded-xl p-4">
+                <p className="text-sm text-muted-foreground">
+                  <strong className="text-foreground">Note:</strong> Your passkey must have been created on a device that syncs with this one.
+                </p>
+              </div>
             </div>
 
             {error && (
@@ -615,7 +585,6 @@ export function WalletSetup({ onWalletCreated }: WalletSetupProps) {
                 variant="ghost"
                 onClick={() => {
                   setStep("welcome");
-                  setImportPhrase("");
                   setError(null);
                 }}
               >
@@ -625,17 +594,17 @@ export function WalletSetup({ onWalletCreated }: WalletSetupProps) {
                 variant="royal"
                 className="flex-1"
                 onClick={handlePasskeyImport}
-                disabled={isLoading || !importPhrase.trim()}
+                disabled={isLoading}
               >
                 {isLoading ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    Securing...
+                    Authenticating...
                   </>
                 ) : (
                   <>
                     <Fingerprint className="w-4 h-4" />
-                    Import & Secure
+                    Load Wallet
                   </>
                 )}
               </Button>
