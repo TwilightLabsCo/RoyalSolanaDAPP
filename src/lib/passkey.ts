@@ -138,6 +138,20 @@ export async function createPasskeyWallet(): Promise<{
   }
 }
 
+// Convert base64url to standard base64
+function base64UrlToBase64(base64url: string): string {
+  let base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
+  while (base64.length % 4) {
+    base64 += '=';
+  }
+  return base64;
+}
+
+// Convert standard base64 to base64url
+function base64ToBase64Url(base64: string): string {
+  return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
 // Authenticate with passkey - returns the credential for key derivation
 export async function authenticatePasskey(credentialId?: string): Promise<{
   credential: PasskeyCredential;
@@ -153,9 +167,11 @@ export async function authenticatePasskey(credentialId?: string): Promise<{
     };
 
     if (credentialId) {
+      // WebAuthn credential IDs are base64url encoded, convert properly
+      const credentialIdBase64 = base64UrlToBase64(credentialId);
       options.allowCredentials = [
         {
-          id: base64ToArrayBuffer(credentialId),
+          id: base64ToArrayBuffer(credentialIdBase64),
           type: 'public-key',
         },
       ];

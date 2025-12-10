@@ -226,56 +226,55 @@ export function WalletSetup({ onWalletCreated }: WalletSetupProps) {
     setIsLoading(true);
     setError(null);
     try {
-      // Authenticate with any available passkey (no specific credential ID)
-      const auth = await authenticatePasskey();
+      // Check if we have a stored wallet first
+      const storedWallet = loadPasskeyWallet();
+      
+      if (!storedWallet) {
+        throw new Error("No passkey wallet found on this device. Please create a new wallet.");
+      }
+
+      // Authenticate with the stored credential ID
+      const auth = await authenticatePasskey(storedWallet.credentialId);
       if (!auth) {
         throw new Error("Passkey authentication failed or cancelled");
       }
 
-      // Check if we have stored wallet data for this passkey
-      const storedWallet = loadPasskeyWallet();
+      // Found matching stored wallet - decrypt it
+      const salt = new Uint8Array(base64ToArrayBuffer(storedWallet.salt));
       
-      if (storedWallet && storedWallet.credentialId === auth.credential.id) {
-        // Found matching stored wallet - decrypt it
-        const salt = new Uint8Array(base64ToArrayBuffer(storedWallet.salt));
-        
-        const walletKey = await decryptWalletKey(
-          storedWallet.encryptedWalletKey,
-          auth.credential.rawId,
-          salt
-        );
+      const walletKey = await decryptWalletKey(
+        storedWallet.encryptedWalletKey,
+        auth.credential.rawId,
+        salt
+      );
 
-        const secretKey = await decryptWithWalletKey(
-          storedWallet.encryptedSecretKey,
+      const secretKey = await decryptWithWalletKey(
+        storedWallet.encryptedSecretKey,
+        walletKey
+      );
+
+      let seedPhrase = '';
+      if (storedWallet.encryptedSeedPhrase) {
+        seedPhrase = await decryptWithWalletKey(
+          storedWallet.encryptedSeedPhrase,
           walletKey
         );
-
-        let seedPhrase = '';
-        if (storedWallet.encryptedSeedPhrase) {
-          seedPhrase = await decryptWithWalletKey(
-            storedWallet.encryptedSeedPhrase,
-            walletKey
-          );
-        }
-
-        const walletData: WalletData = {
-          publicKey: storedWallet.publicKey,
-          secretKey,
-          encryptedSeedPhrase: seedPhrase,
-          createdAt: storedWallet.createdAt,
-          passkeyEnabled: true,
-          passkeyCredentialId: storedWallet.credentialId,
-        };
-
-        toast({
-          title: "Wallet loaded!",
-          description: `Address: ${storedWallet.publicKey.slice(0, 8)}...`,
-        });
-        onWalletCreated(walletData);
-      } else {
-        // No stored wallet for this passkey - inform user
-        throw new Error("No wallet found for this passkey. Please create a new wallet or use a different passkey.");
       }
+
+      const walletData: WalletData = {
+        publicKey: storedWallet.publicKey,
+        secretKey,
+        encryptedSeedPhrase: seedPhrase,
+        createdAt: storedWallet.createdAt,
+        passkeyEnabled: true,
+        passkeyCredentialId: storedWallet.credentialId,
+      };
+
+      toast({
+        title: "Wallet loaded!",
+        description: `Address: ${storedWallet.publicKey.slice(0, 8)}...`,
+      });
+      onWalletCreated(walletData);
     } catch (err: any) {
       console.error("Passkey import failed:", err);
       setError(err.message || "Failed to load wallet with passkey");

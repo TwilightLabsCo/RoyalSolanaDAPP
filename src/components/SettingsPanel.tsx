@@ -248,6 +248,25 @@ export function SettingsPanel({ wallet, onLogout }: SettingsPanelProps) {
                   </div>
                 </div>
               )}
+
+              {/* Backup to Passkey - for seed phrase wallets without passkey */}
+              {!passkeyEnabled && (
+                <div className="mt-3 pt-3 border-t border-border/30">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full"
+                    onClick={handleSetupPasskey}
+                    disabled={isSettingUpPasskey}
+                  >
+                    <Fingerprint className="w-4 h-4 mr-2" />
+                    {isSettingUpPasskey ? "Backing up..." : "Backup to Passkey"}
+                  </Button>
+                  <p className="text-xs text-muted-foreground mt-2 text-center">
+                    Securely backup your wallet to a passkey for seedless access
+                  </p>
+                </div>
+              )}
             </div>
           )}
 
