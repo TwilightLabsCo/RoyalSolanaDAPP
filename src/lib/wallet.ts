@@ -1,6 +1,7 @@
 import * as bip39 from 'bip39';
 import { Keypair, PublicKey } from '@solana/web3.js';
 import bs58 from 'bs58';
+import { derivePath } from 'ed25519-hd-key';
 import { saveEncryptedData, loadEncryptedData, deleteCookie } from './encryption';
 
 export interface WalletData {
@@ -14,8 +15,15 @@ export interface WalletData {
 
 const WALLET_COOKIE_KEY = 'royal_wallet_data';
 
+// Standard Solana BIP44 derivation path
+const SOLANA_DERIVATION_PATH = "m/44'/501'/0'/0'";
+
 export function generateSeedPhrase(): string {
-  return bip39.generateMnemonic(256);
+  return bip39.generateMnemonic(128); // 12 words (128 bits) - more common
+}
+
+export function generate24WordSeedPhrase(): string {
+  return bip39.generateMnemonic(256); // 24 words (256 bits)
 }
 
 export function validateSeedPhrase(phrase: string): boolean {
@@ -24,9 +32,9 @@ export function validateSeedPhrase(phrase: string): boolean {
 
 export function deriveKeypair(seedPhrase: string): Keypair {
   const seed = bip39.mnemonicToSeedSync(seedPhrase.trim().toLowerCase());
-  // Use first 32 bytes of seed for keypair (simplified derivation)
-  const keypairSeed = seed.slice(0, 32);
-  return Keypair.fromSeed(new Uint8Array(keypairSeed));
+  // Use standard BIP44 derivation path for Solana (compatible with Phantom, Solflare, etc.)
+  const derivedSeed = derivePath(SOLANA_DERIVATION_PATH, seed.toString('hex')).key;
+  return Keypair.fromSeed(derivedSeed);
 }
 
 export async function createWallet(seedPhrase: string): Promise<WalletData> {
