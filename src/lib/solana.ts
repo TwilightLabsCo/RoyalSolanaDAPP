@@ -9,28 +9,62 @@ import {
   ParsedAccountData,
 } from '@solana/web3.js';
 
-// Network endpoints
+// Network endpoints - using reliable public RPCs with CORS support
 export const NETWORKS = {
-  mainnet: 'https://api.mainnet-beta.solana.com',
+  mainnet: 'https://solana-mainnet.g.alchemy.com/v2/demo',
   devnet: 'https://api.devnet.solana.com',
   testnet: 'https://api.testnet.solana.com',
+} as const;
+
+// Fallback endpoints
+const FALLBACK_ENDPOINTS = {
+  mainnet: [
+    'https://rpc.ankr.com/solana',
+    'https://solana.public-rpc.com',
+  ],
+  devnet: ['https://rpc.ankr.com/solana_devnet'],
+  testnet: [],
 } as const;
 
 export type NetworkType = keyof typeof NETWORKS;
 
 let connection: Connection | null = null;
 let currentNetwork: NetworkType = 'devnet';
+let currentEndpointIndex = 0;
+
+function getAllEndpoints(network: NetworkType): string[] {
+  return [NETWORKS[network], ...(FALLBACK_ENDPOINTS[network] || [])];
+}
 
 export function getConnection(): Connection {
   if (!connection) {
-    connection = new Connection(NETWORKS[currentNetwork], 'confirmed');
+    const endpoints = getAllEndpoints(currentNetwork);
+    connection = new Connection(endpoints[currentEndpointIndex] || endpoints[0], {
+      commitment: 'confirmed',
+      confirmTransactionInitialTimeout: 60000,
+    });
   }
+  return connection;
+}
+
+export async function tryNextEndpoint(): Promise<Connection> {
+  const endpoints = getAllEndpoints(currentNetwork);
+  currentEndpointIndex = (currentEndpointIndex + 1) % endpoints.length;
+  connection = new Connection(endpoints[currentEndpointIndex], {
+    commitment: 'confirmed',
+    confirmTransactionInitialTimeout: 60000,
+  });
   return connection;
 }
 
 export function switchNetwork(network: NetworkType): void {
   currentNetwork = network;
-  connection = new Connection(NETWORKS[network], 'confirmed');
+  currentEndpointIndex = 0;
+  const endpoints = getAllEndpoints(network);
+  connection = new Connection(endpoints[0], {
+    commitment: 'confirmed',
+    confirmTransactionInitialTimeout: 60000,
+  });
 }
 
 export function getCurrentNetwork(): NetworkType {
