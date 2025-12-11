@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { CrownIcon } from "./CrownIcon";
 import { generateSeedPhrase, validateSeedPhrase, createWallet, WalletData, deriveKeypair } from "@/lib/wallet";
+import { encrypt } from "@/lib/encryption";
 import { 
   isPasskeySupported, 
   createPasskeyWallet, 
@@ -71,8 +72,15 @@ export function WalletSetup({ onWalletCreated }: WalletSetupProps) {
   const handleCopyPhrase = async () => {
     await navigator.clipboard.writeText(seedPhrase);
     setCopied(true);
-    toast({ title: "Copied!", description: "Seed phrase copied to clipboard" });
+    toast({ 
+      title: "Copied!", 
+      description: "Seed phrase copied. Clipboard will auto-clear in 30 seconds.",
+    });
     setTimeout(() => setCopied(false), 2000);
+    // Auto-clear clipboard after 30 seconds for security
+    setTimeout(() => {
+      navigator.clipboard.writeText('').catch(() => {});
+    }, 30000);
   };
 
   const handleConfirmCreate = async () => {
@@ -253,18 +261,20 @@ export function WalletSetup({ onWalletCreated }: WalletSetupProps) {
         walletKey
       );
 
-      let seedPhrase = '';
+      let encryptedSeedPhrase = '';
       if (storedWallet.encryptedSeedPhrase) {
-        seedPhrase = await decryptWithWalletKey(
+        // Decrypt from passkey storage, then re-encrypt with session AES for consistent handling
+        const plaintextSeed = await decryptWithWalletKey(
           storedWallet.encryptedSeedPhrase,
           walletKey
         );
+        encryptedSeedPhrase = await encrypt(plaintextSeed);
       }
 
       const walletData: WalletData = {
         publicKey: storedWallet.publicKey,
         secretKey,
-        encryptedSeedPhrase: seedPhrase,
+        encryptedSeedPhrase,
         createdAt: storedWallet.createdAt,
         passkeyEnabled: true,
         passkeyCredentialId: storedWallet.credentialId,
@@ -317,18 +327,20 @@ export function WalletSetup({ onWalletCreated }: WalletSetupProps) {
         walletKey
       );
 
-      let seedPhrase = '';
+      let encryptedSeedPhrase = '';
       if (existingPasskeyWallet.encryptedSeedPhrase) {
-        seedPhrase = await decryptWithWalletKey(
+        // Decrypt from passkey storage, then re-encrypt with session AES for consistent handling
+        const plaintextSeed = await decryptWithWalletKey(
           existingPasskeyWallet.encryptedSeedPhrase,
           walletKey
         );
+        encryptedSeedPhrase = await encrypt(plaintextSeed);
       }
 
       const walletData: WalletData = {
         publicKey: existingPasskeyWallet.publicKey,
         secretKey,
-        encryptedSeedPhrase: seedPhrase,
+        encryptedSeedPhrase,
         createdAt: existingPasskeyWallet.createdAt,
         passkeyEnabled: true,
         passkeyCredentialId: existingPasskeyWallet.credentialId,

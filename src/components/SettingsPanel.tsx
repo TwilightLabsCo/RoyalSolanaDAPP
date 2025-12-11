@@ -63,8 +63,15 @@ export function SettingsPanel({ wallet, onLogout }: SettingsPanelProps) {
     if (!decryptedSeedPhrase) return;
     await navigator.clipboard.writeText(decryptedSeedPhrase);
     setCopied(true);
-    toast({ title: "Copied!", description: "Seed phrase copied to clipboard" });
+    toast({ 
+      title: "Copied!", 
+      description: "Seed phrase copied. Clipboard will auto-clear in 30 seconds.",
+    });
     setTimeout(() => setCopied(false), 2000);
+    // Auto-clear clipboard after 30 seconds for security
+    setTimeout(() => {
+      navigator.clipboard.writeText('').catch(() => {});
+    }, 30000);
   };
 
   const handleSetupPasskey = async () => {
@@ -102,9 +109,15 @@ export function SettingsPanel({ wallet, onLogout }: SettingsPanelProps) {
 
       // Encrypt wallet data with wallet key
       const encryptedSecretKey = await encryptWithWalletKey(wallet.secretKey, walletKey);
-      const encryptedSeedPhrase = wallet.encryptedSeedPhrase 
-        ? await encryptWithWalletKey(wallet.encryptedSeedPhrase, walletKey)
-        : undefined;
+      
+      // Decrypt seed phrase first (it may be encrypted with session AES), then re-encrypt for passkey
+      let passkeyEncryptedSeedPhrase: string | undefined;
+      if (wallet.encryptedSeedPhrase) {
+        // Import decryptSeedPhrase to get plaintext first
+        const { decryptSeedPhrase: decryptSeed } = await import('@/lib/wallet');
+        const plaintextSeed = await decryptSeed(wallet.encryptedSeedPhrase);
+        passkeyEncryptedSeedPhrase = await encryptWithWalletKey(plaintextSeed, walletKey);
+      }
 
       // Save passkey wallet data
       const passkeyWallet: StoredPasskeyWallet = {
@@ -112,7 +125,7 @@ export function SettingsPanel({ wallet, onLogout }: SettingsPanelProps) {
         publicKey: wallet.publicKey,
         encryptedWalletKey,
         encryptedSecretKey,
-        encryptedSeedPhrase,
+        encryptedSeedPhrase: passkeyEncryptedSeedPhrase,
         salt: arrayBufferToBase64(salt.buffer),
         createdAt: Date.now(),
       };
