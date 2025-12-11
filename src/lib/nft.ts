@@ -67,15 +67,52 @@ function parseMetadata(data: Buffer): { name: string; symbol: string; uri: strin
   }
 }
 
-// Fetch JSON metadata from URI
+// IPFS gateways to try in order
+const IPFS_GATEWAYS = [
+  'https://ipfs.io/ipfs/',
+  'https://cloudflare-ipfs.com/ipfs/',
+  'https://gateway.pinata.cloud/ipfs/',
+  'https://dweb.link/ipfs/',
+];
+
+// Fetch JSON metadata from URI with fallback gateways
 async function fetchMetadataJSON(uri: string): Promise<NFTMetadata | null> {
   try {
-    // Handle IPFS URIs
     let fetchUri = uri;
+    
+    // Handle IPFS URIs with gateway fallbacks
     if (uri.startsWith('ipfs://')) {
-      fetchUri = uri.replace('ipfs://', 'https://ipfs.io/ipfs/');
+      const ipfsHash = uri.replace('ipfs://', '');
+      
+      // Try each gateway
+      for (const gateway of IPFS_GATEWAYS) {
+        try {
+          const response = await fetch(gateway + ipfsHash, { 
+            signal: AbortSignal.timeout(5000) 
+          });
+          if (response.ok) {
+            const json = await response.json();
+            let image = json.image || '';
+            if (image.startsWith('ipfs://')) {
+              image = IPFS_GATEWAYS[0] + image.replace('ipfs://', '');
+            }
+            return {
+              name: json.name || 'Unknown',
+              symbol: json.symbol || '',
+              image,
+              description: json.description,
+              attributes: json.attributes,
+              collection: json.collection,
+            };
+          }
+        } catch {
+          continue;
+        }
+      }
+      return null;
     }
     
+    // Regular HTTP URIs
     const response = await fetch(fetchUri, { 
       signal: AbortSignal.timeout(5000) 
     });
@@ -87,7 +124,7 @@ async function fetchMetadataJSON(uri: string): Promise<NFTMetadata | null> {
     // Handle IPFS image URLs
     let image = json.image || '';
     if (image.startsWith('ipfs://')) {
-      image = image.replace('ipfs://', 'https://ipfs.io/ipfs/');
+      image = IPFS_GATEWAYS[0] + image.replace('ipfs://', '');
     }
     
     return {
