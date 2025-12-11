@@ -29,6 +29,27 @@ const PASSKEY_WALLET_KEY = 'royal_passkey_wallet';
 export async function isPasskeySupported(): Promise<boolean> {
   if (typeof window === 'undefined') return false;
   try {
+    // Check if WebAuthn API exists
+    if (!window.PublicKeyCredential) return false;
+    
+    // Check for platform authenticator (Face ID, Touch ID, Windows Hello)
+    if (PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable) {
+      const platformAvailable = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+      if (platformAvailable) return true;
+    }
+    
+    // Even if platform authenticator isn't available, security keys might work
+    // Return true if WebAuthn API exists - we'll handle errors at creation time
+    return !!window.PublicKeyCredential;
+  } catch {
+    return false;
+  }
+}
+
+// More strict check for actual platform authenticator
+export async function hasPlatformAuthenticator(): Promise<boolean> {
+  if (typeof window === 'undefined') return false;
+  try {
     return !!(
       window.PublicKeyCredential &&
       PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable &&
