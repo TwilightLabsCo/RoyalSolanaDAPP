@@ -2,11 +2,11 @@ import * as bip39 from 'bip39';
 import { Keypair, PublicKey } from '@solana/web3.js';
 import bs58 from 'bs58';
 import { HDKey } from 'micro-ed25519-hdkey';
-import { saveEncryptedData, loadEncryptedData, deleteCookie } from './encryption';
+import { saveEncryptedData, loadEncryptedData, deleteCookie, encrypt, decrypt } from './encryption';
 
 export interface WalletData {
   publicKey: string;
-  encryptedSeedPhrase: string;
+  encryptedSeedPhrase: string; // Actually encrypted with AES-GCM
   secretKey: string;
   createdAt: number;
   passkeyEnabled: boolean;
@@ -40,16 +40,36 @@ export function deriveKeypair(seedPhrase: string): Keypair {
 export async function createWallet(seedPhrase: string): Promise<WalletData> {
   // Use proper BIP44 derivation for compatibility with Phantom, Solflare, etc.
   const keypair = deriveKeypair(seedPhrase);
+  const normalizedSeedPhrase = seedPhrase.trim().toLowerCase();
+  
+  // Actually encrypt the seed phrase before storing
+  const encryptedSeed = await encrypt(normalizedSeedPhrase);
+  
   const walletData: WalletData = {
     publicKey: keypair.publicKey.toBase58(),
     secretKey: bs58.encode(keypair.secretKey),
-    encryptedSeedPhrase: seedPhrase.trim().toLowerCase(),
+    encryptedSeedPhrase: encryptedSeed,
     createdAt: Date.now(),
     passkeyEnabled: false,
   };
   
   await saveEncryptedData(WALLET_COOKIE_KEY, walletData);
-  return walletData;
+  
+  // Return wallet data with decrypted seed phrase for immediate use
+  return {
+    ...walletData,
+    encryptedSeedPhrase: normalizedSeedPhrase, // Return plaintext for current session
+  };
+}
+
+// Decrypt the seed phrase from wallet data
+export async function decryptSeedPhrase(encryptedSeedPhrase: string): Promise<string> {
+  try {
+    return await decrypt(encryptedSeedPhrase);
+  } catch {
+    // If decryption fails, it might already be plaintext (legacy data)
+    return encryptedSeedPhrase;
+  }
 }
 
 export async function loadWallet(): Promise<WalletData | null> {
