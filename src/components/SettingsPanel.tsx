@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { WalletData, updateWallet } from "@/lib/wallet";
+import { WalletData, updateWallet, decryptSeedPhrase } from "@/lib/wallet";
 import { 
   isPasskeySupported, 
   createPasskeyWallet, 
@@ -38,6 +38,14 @@ export function SettingsPanel({ wallet, onLogout }: SettingsPanelProps) {
   const [passkeyEnabled, setPasskeyEnabled] = useState(wallet.passkeyEnabled);
   const [isSettingUpPasskey, setIsSettingUpPasskey] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [decryptedSeedPhrase, setDecryptedSeedPhrase] = useState<string | null>(null);
+
+  // Decrypt seed phrase when revealing
+  useEffect(() => {
+    if (showSeedPhrase && wallet.encryptedSeedPhrase && !decryptedSeedPhrase) {
+      decryptSeedPhrase(wallet.encryptedSeedPhrase).then(setDecryptedSeedPhrase);
+    }
+  }, [showSeedPhrase, wallet.encryptedSeedPhrase, decryptedSeedPhrase]);
 
   const handleRevealSeedPhrase = () => {
     if (!seedPhraseRevealed) {
@@ -52,7 +60,8 @@ export function SettingsPanel({ wallet, onLogout }: SettingsPanelProps) {
   };
 
   const handleCopySeedPhrase = async () => {
-    await navigator.clipboard.writeText(wallet.encryptedSeedPhrase);
+    if (!decryptedSeedPhrase) return;
+    await navigator.clipboard.writeText(decryptedSeedPhrase);
     setCopied(true);
     toast({ title: "Copied!", description: "Seed phrase copied to clipboard" });
     setTimeout(() => setCopied(false), 2000);
@@ -231,10 +240,10 @@ export function SettingsPanel({ wallet, onLogout }: SettingsPanelProps) {
                 </div>
               </div>
 
-              {showSeedPhrase && (
+              {showSeedPhrase && decryptedSeedPhrase && (
                 <div className="bg-background/50 rounded-xl p-3 mt-3">
                   <div className="grid grid-cols-3 gap-2">
-                    {wallet.encryptedSeedPhrase.split(" ").map((word, index) => (
+                    {decryptedSeedPhrase.split(" ").map((word, index) => (
                       <div
                         key={index}
                         className="bg-secondary/50 rounded-lg px-2 py-1.5 text-sm flex items-center gap-1"
