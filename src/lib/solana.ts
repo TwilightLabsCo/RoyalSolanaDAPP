@@ -11,7 +11,7 @@ import {
 
 // Network endpoints - using reliable public RPCs with CORS support
 export const NETWORKS = {
-  mainnet: 'https://solana-mainnet.g.alchemy.com/v2/demo',
+  mainnet: 'https://api.mainnet-beta.solana.com',
   devnet: 'https://api.devnet.solana.com',
   testnet: 'https://api.testnet.solana.com',
 } as const;
@@ -21,8 +21,11 @@ const FALLBACK_ENDPOINTS = {
   mainnet: [
     'https://rpc.ankr.com/solana',
     'https://solana.public-rpc.com',
+    'https://solana-mainnet.g.alchemy.com/v2/demo',
   ],
-  devnet: ['https://rpc.ankr.com/solana_devnet'],
+  devnet: [
+    'https://rpc.ankr.com/solana_devnet',
+  ],
   testnet: [],
 } as const;
 
@@ -191,8 +194,19 @@ export async function sendSol(
 export async function requestAirdrop(publicKey: string, amount: number = 1): Promise<string> {
   const conn = getConnection();
   const pubKey = new PublicKey(publicKey);
+  
+  // Get latest blockhash for confirmation
+  const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash();
+  
   const signature = await conn.requestAirdrop(pubKey, amount * LAMPORTS_PER_SOL);
-  await conn.confirmTransaction(signature);
+  
+  // Use the proper confirmation method
+  await conn.confirmTransaction({
+    signature,
+    blockhash,
+    lastValidBlockHeight,
+  }, 'confirmed');
+  
   return signature;
 }
 

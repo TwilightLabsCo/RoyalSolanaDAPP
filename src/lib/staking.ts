@@ -34,11 +34,22 @@ export interface StakeAccountInfo {
 }
 
 // Fetch validators from on-chain with retry logic
-export async function fetchValidators(retries = 2): Promise<ValidatorInfo[]> {
+export async function fetchValidators(retries = 3): Promise<ValidatorInfo[]> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const connection = getConnection();
-      const voteAccounts = await connection.getVoteAccounts();
+      
+      // Use a longer timeout for getVoteAccounts
+      const voteAccounts = await Promise.race([
+        connection.getVoteAccounts(),
+        new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error('Timeout')), 30000)
+        )
+      ]);
+      
+      if (!voteAccounts || !voteAccounts.current || voteAccounts.current.length === 0) {
+        throw new Error('No validators returned');
+      }
       
       // Get current epoch info for APY calculation
       const epochInfo = await connection.getEpochInfo();
@@ -76,6 +87,8 @@ export async function fetchValidators(retries = 2): Promise<ValidatorInfo[]> {
         // Try next endpoint
         const { tryNextEndpoint } = await import('./solana');
         await tryNextEndpoint();
+        // Small delay before retry
+        await new Promise(resolve => setTimeout(resolve, 1000));
         continue;
       }
       return [];
