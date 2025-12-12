@@ -140,65 +140,85 @@ async function fetchMetadataJSON(uri: string): Promise<NFTMetadata | null> {
   }
 }
 
-// Fetch all NFTs for a wallet
-export async function fetchNFTs(walletAddress: string): Promise<NFT[]> {
-  try {
-    const connection = getConnection();
-    const walletPubkey = new PublicKey(walletAddress);
-    
-    // Get all token accounts
-    const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
-      walletPubkey,
-      { programId: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA') }
-    );
-    
-    // Filter for NFTs (amount = 1, decimals = 0)
-    const nftMints = tokenAccounts.value
-      .filter((account) => {
-        const info = account.account.data.parsed.info;
-        return (
-          info.tokenAmount.decimals === 0 &&
-          info.tokenAmount.uiAmount === 1
-        );
-      })
-      .map((account) => account.account.data.parsed.info.mint);
-    
-    // Fetch metadata for each NFT
-    const nfts: NFT[] = [];
-    
-    for (const mint of nftMints.slice(0, 50)) { // Limit to 50 NFTs
-      try {
-        const mintPubkey = new PublicKey(mint);
-        const metadataPDA = getMetadataPDA(mintPubkey);
-        
-        const accountInfo = await connection.getAccountInfo(metadataPDA);
-        if (!accountInfo) continue;
-        
-        const onChainMeta = parseMetadata(accountInfo.data);
-        if (!onChainMeta) continue;
-        
-        // Fetch off-chain metadata
-        const jsonMeta = await fetchMetadataJSON(onChainMeta.uri);
-        
-        nfts.push({
-          mint,
-          name: jsonMeta?.name || onChainMeta.name || 'Unknown NFT',
-          symbol: jsonMeta?.symbol || onChainMeta.symbol || '',
-          image: jsonMeta?.image || '',
-          description: jsonMeta?.description,
-          attributes: jsonMeta?.attributes,
-          collection: jsonMeta?.collection?.name,
-        });
-      } catch (e) {
-        console.error('Failed to fetch NFT metadata:', e);
+// Fetch all NFTs for a wallet with retry logic
+export async function fetchNFTs(walletAddress: string, retries = 2): Promise<NFT[]> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const connection = getConnection();
+      const walletPubkey = new PublicKey(walletAddress);
+      
+      // Get all token accounts with timeout
+      const tokenAccounts = await Promise.race([
+        connection.getParsedTokenAccountsByOwner(
+          walletPubkey,
+          { programId: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA') }
+        ),
+        new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error('Timeout')), 15000)
+        )
+      ]);
+      
+      // Filter for NFTs (amount = 1, decimals = 0)
+      const nftMints = tokenAccounts.value
+        .filter((account) => {
+          const info = account.account.data.parsed.info;
+          return (
+            info.tokenAmount.decimals === 0 &&
+            info.tokenAmount.uiAmount === 1
+          );
+        })
+        .map((account) => account.account.data.parsed.info.mint);
+      
+      if (nftMints.length === 0) return [];
+      
+      // Batch fetch metadata PDAs
+      const mintsToFetch = nftMints.slice(0, 50);
+      const metadataPDAs = mintsToFetch.map(mint => getMetadataPDA(new PublicKey(mint)));
+      
+      // Fetch all account infos in one batch
+      const accountInfos = await connection.getMultipleAccountsInfo(metadataPDAs);
+      
+      // Parse and fetch off-chain metadata in parallel
+      const nftPromises = mintsToFetch.map(async (mint, index) => {
+        try {
+          const accountInfo = accountInfos[index];
+          if (!accountInfo) return null;
+          
+          const onChainMeta = parseMetadata(accountInfo.data);
+          if (!onChainMeta) return null;
+          
+          // Fetch off-chain metadata
+          const jsonMeta = await fetchMetadataJSON(onChainMeta.uri);
+          
+          return {
+            mint,
+            name: jsonMeta?.name || onChainMeta.name || 'Unknown NFT',
+            symbol: jsonMeta?.symbol || onChainMeta.symbol || '',
+            image: jsonMeta?.image || '',
+            description: jsonMeta?.description,
+            attributes: jsonMeta?.attributes,
+            collection: jsonMeta?.collection?.name,
+          } as NFT;
+        } catch {
+          return null;
+        }
+      });
+      
+      const results = await Promise.all(nftPromises);
+      return results.filter((nft): nft is NFT => nft !== null);
+      
+    } catch (error) {
+      console.error(`Failed to fetch NFTs (attempt ${attempt + 1}):`, error);
+      if (attempt < retries) {
+        const { tryNextEndpoint } = await import('./solana');
+        await tryNextEndpoint();
+        await new Promise(resolve => setTimeout(resolve, 500));
+        continue;
       }
+      return [];
     }
-    
-    return nfts;
-  } catch (error) {
-    console.error('Failed to fetch NFTs:', error);
-    return [];
   }
+  return [];
 }
 
 // Get NFT floor price from Magic Eden API (mainnet only)

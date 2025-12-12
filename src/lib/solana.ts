@@ -16,17 +16,20 @@ export const NETWORKS = {
   testnet: 'https://api.testnet.solana.com',
 } as const;
 
-// Fallback endpoints
+// Fallback endpoints for each network
 const FALLBACK_ENDPOINTS = {
   mainnet: [
     'https://rpc.ankr.com/solana',
     'https://solana.public-rpc.com',
-    'https://solana-mainnet.g.alchemy.com/v2/demo',
+    'https://mainnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
   ],
   devnet: [
     'https://rpc.ankr.com/solana_devnet',
+    'https://devnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
   ],
-  testnet: [],
+  testnet: [
+    'https://testnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
+  ],
 } as const;
 
 export type NetworkType = keyof typeof NETWORKS;
