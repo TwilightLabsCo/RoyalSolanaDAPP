@@ -45,8 +45,7 @@ export function WalletSetup({ onWalletCreated }: WalletSetupProps) {
       const supported = await isPasskeySupported();
       setPasskeySupported(supported);
       
-      // Always check for existing wallet (user might have created one before)
-      if (hasPasskeyWallet()) {
+      if (supported && hasPasskeyWallet()) {
         const wallet = loadPasskeyWallet();
         setExistingPasskeyWallet(wallet);
       }
@@ -424,37 +423,41 @@ export function WalletSetup({ onWalletCreated }: WalletSetupProps) {
             )}
 
             <div className="space-y-3">
-              {/* Passkey options - always show, handle unsupported at action time */}
-              <Button
-                variant={existingPasskeyWallet ? "glass" : "royal"}
-                size="lg"
-                className="w-full"
-                onClick={() => setStep("passkey-create")}
-              >
-                <Fingerprint className="w-5 h-5" />
-                Create with Passkey
-              </Button>
-              <Button
-                variant="glass"
-                size="lg"
-                className="w-full"
-                onClick={() => setStep("passkey-import")}
-              >
-                <Fingerprint className="w-5 h-5" />
-                Load with Passkey
-              </Button>
-              
-              <div className="relative my-4">
-                <div className="absolute inset-0 flex items-center">
-                  <div className="w-full border-t border-border" />
-                </div>
-                <div className="relative flex justify-center text-xs">
-                  <span className="bg-background px-2 text-muted-foreground">or use seed phrase</span>
-                </div>
-              </div>
+              {/* Passkey options - only show if supported */}
+              {passkeySupported && (
+                <>
+                  <Button
+                    variant={existingPasskeyWallet ? "glass" : "royal"}
+                    size="lg"
+                    className="w-full"
+                    onClick={() => setStep("passkey-create")}
+                  >
+                    <Fingerprint className="w-5 h-5" />
+                    Create with Passkey
+                  </Button>
+                  <Button
+                    variant="glass"
+                    size="lg"
+                    className="w-full"
+                    onClick={() => setStep("passkey-import")}
+                  >
+                    <Fingerprint className="w-5 h-5" />
+                    Load with Passkey
+                  </Button>
+                  
+                  <div className="relative my-4">
+                    <div className="absolute inset-0 flex items-center">
+                      <div className="w-full border-t border-border" />
+                    </div>
+                    <div className="relative flex justify-center text-xs">
+                      <span className="bg-background px-2 text-muted-foreground">or use seed phrase</span>
+                    </div>
+                  </div>
+                </>
+              )}
 
               <Button
-                variant="outline"
+                variant={passkeySupported ? "outline" : "royal"}
                 size="lg"
                 className="w-full"
                 onClick={handleCreateWallet}
