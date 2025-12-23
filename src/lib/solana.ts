@@ -11,7 +11,7 @@ import {
 
 // Network endpoints - using reliable public RPCs with CORS support
 export const NETWORKS = {
-  mainnet: 'https://api.mainnet-beta.solana.com',
+  mainnet: 'https://mainnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
   devnet: 'https://api.devnet.solana.com',
   testnet: 'https://api.testnet.solana.com',
 } as const;
@@ -19,13 +19,13 @@ export const NETWORKS = {
 // Fallback endpoints for each network
 const FALLBACK_ENDPOINTS = {
   mainnet: [
+    'https://api.mainnet-beta.solana.com',
     'https://rpc.ankr.com/solana',
     'https://solana.public-rpc.com',
-    'https://mainnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
   ],
   devnet: [
-    'https://rpc.ankr.com/solana_devnet',
     'https://devnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
+    'https://rpc.ankr.com/solana_devnet',
   ],
   testnet: [
     'https://testnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
