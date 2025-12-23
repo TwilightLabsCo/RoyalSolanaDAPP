@@ -4,8 +4,10 @@ import { CrownIcon } from "./CrownIcon";
 import { generateSeedPhrase, validateSeedPhrase, createWallet, WalletData, deriveKeypair } from "@/lib/wallet";
 import { encrypt } from "@/lib/encryption";
 import { 
-  isPasskeySupported, 
-  createPasskeyWallet, 
+  isPasskeySupported,
+  isSecurityKeySupported,
+  createPasskeyWallet,
+  createSecurityKeyWallet,
   authenticatePasskey,
   encryptWalletKey,
   encryptWithWalletKey,
@@ -18,7 +20,7 @@ import {
   base64ToArrayBuffer,
   StoredPasskeyWallet,
 } from "@/lib/passkey";
-import { Shield, Key, Import, Eye, EyeOff, Copy, Check, AlertTriangle, Globe, Fingerprint, Loader2 } from "lucide-react";
+import { Shield, Key, Import, Eye, EyeOff, Copy, Check, AlertTriangle, Globe, Fingerprint, Loader2, KeyRound } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import bs58 from "bs58";
 
@@ -26,7 +28,7 @@ interface WalletSetupProps {
   onWalletCreated: (wallet: WalletData) => void;
 }
 
-type SetupStep = "welcome" | "create" | "import" | "passkey-create" | "passkey-import" | "passkey-unlock";
+type SetupStep = "welcome" | "create" | "import" | "passkey-create" | "passkey-import" | "passkey-unlock" | "securitykey-create";
 
 export function WalletSetup({ onWalletCreated }: WalletSetupProps) {
   const [step, setStep] = useState<SetupStep>("welcome");
@@ -38,20 +40,79 @@ export function WalletSetup({ onWalletCreated }: WalletSetupProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [passkeySupported, setPasskeySupported] = useState(false);
+  const [securityKeySupported, setSecurityKeySupported] = useState(false);
   const [existingPasskeyWallet, setExistingPasskeyWallet] = useState<StoredPasskeyWallet | null>(null);
 
   useEffect(() => {
     const checkPasskey = async () => {
-      const supported = await isPasskeySupported();
-      setPasskeySupported(supported);
+      const [passkey, secKey] = await Promise.all([
+        isPasskeySupported(),
+        isSecurityKeySupported(),
+      ]);
+      setPasskeySupported(passkey);
+      setSecurityKeySupported(secKey);
       
-      if (supported && hasPasskeyWallet()) {
+      if ((passkey || secKey) && hasPasskeyWallet()) {
         const wallet = loadPasskeyWallet();
         setExistingPasskeyWallet(wallet);
       }
     };
     checkPasskey();
   }, []);
+
+  // Create wallet with YubiKey/security key
+  const handleSecurityKeyCreate = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const result = await createSecurityKeyWallet();
+      if (!result) {
+        throw new Error("Failed to create with security key. Please try again.");
+      }
+
+      const { credential, keypair, walletKey, salt } = result;
+      
+      const encryptedWalletKey = await encryptWalletKey(walletKey, credential.rawId, salt);
+      const secretKeyBase58 = bs58.encode(keypair.secretKey);
+      const encryptedSecretKey = await encryptWithWalletKey(secretKeyBase58, walletKey);
+
+      const passkeyWallet: StoredPasskeyWallet = {
+        credentialId: credential.id,
+        publicKey: keypair.publicKey.toBase58(),
+        encryptedWalletKey,
+        encryptedSecretKey,
+        salt: arrayBufferToBase64(salt.buffer),
+        createdAt: Date.now(),
+        isSecurityKey: true,
+      };
+      savePasskeyWallet(passkeyWallet);
+
+      const walletData: WalletData = {
+        publicKey: keypair.publicKey.toBase58(),
+        secretKey: secretKeyBase58,
+        encryptedSeedPhrase: '',
+        createdAt: Date.now(),
+        passkeyEnabled: true,
+        passkeyCredentialId: credential.id,
+      };
+
+      toast({
+        title: "Security key wallet created!",
+        description: `Address: ${keypair.publicKey.toBase58().slice(0, 8)}...`,
+      });
+      onWalletCreated(walletData);
+    } catch (err: any) {
+      console.error("Security key creation failed:", err);
+      setError(err.message || "Failed to create security key wallet");
+      toast({
+        title: "Error",
+        description: err.message || "Failed to create security key wallet",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const handleCreateWallet = () => {
     try {
