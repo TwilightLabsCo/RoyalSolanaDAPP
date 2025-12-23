@@ -10,22 +10,24 @@ import {
 } from '@solana/web3.js';
 
 // Network endpoints - using reliable public RPCs with CORS support
+// Primary endpoints - these are public and more reliable
 export const NETWORKS = {
-  mainnet: 'https://mainnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
+  mainnet: 'https://api.mainnet-beta.solana.com',
   devnet: 'https://api.devnet.solana.com',
   testnet: 'https://api.testnet.solana.com',
 } as const;
 
-// Fallback endpoints for each network
+// Fallback endpoints for each network - multiple options for reliability
 const FALLBACK_ENDPOINTS = {
   mainnet: [
-    'https://api.mainnet-beta.solana.com',
     'https://rpc.ankr.com/solana',
+    'https://solana-mainnet.g.alchemy.com/v2/demo',
     'https://solana.public-rpc.com',
+    'https://mainnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
   ],
   devnet: [
-    'https://devnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
     'https://rpc.ankr.com/solana_devnet',
+    'https://devnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
   ],
   testnet: [
     'https://testnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
@@ -48,6 +50,22 @@ export function getConnection(): Connection {
     connection = new Connection(endpoints[currentEndpointIndex] || endpoints[0], {
       commitment: 'confirmed',
       confirmTransactionInitialTimeout: 60000,
+      fetch: async (url, options) => {
+        // Add timeout to fetch requests
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000);
+        try {
+          const response = await fetch(url, {
+            ...options,
+            signal: controller.signal,
+          });
+          clearTimeout(timeoutId);
+          return response;
+        } catch (error) {
+          clearTimeout(timeoutId);
+          throw error;
+        }
+      },
     });
   }
   return connection;
@@ -78,15 +96,29 @@ export function getCurrentNetwork(): NetworkType {
 }
 
 export async function getBalance(publicKey: string): Promise<number> {
-  try {
-    const conn = getConnection();
-    const pubKey = new PublicKey(publicKey);
-    const balance = await conn.getBalance(pubKey);
-    return balance;
-  } catch (error) {
-    console.error('Failed to get balance:', error);
-    return 0;
+  const maxRetries = 3;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const conn = getConnection();
+      const pubKey = new PublicKey(publicKey);
+      const balance = await Promise.race([
+        conn.getBalance(pubKey),
+        new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error('Balance fetch timeout')), 15000)
+        )
+      ]);
+      return balance;
+    } catch (error) {
+      console.error(`Failed to get balance (attempt ${attempt + 1}):`, error);
+      if (attempt < maxRetries - 1) {
+        await tryNextEndpoint();
+        await new Promise(resolve => setTimeout(resolve, 500));
+        continue;
+      }
+      return 0;
+    }
   }
+  return 0;
 }
 
 export async function getSolPrice(): Promise<number> {
