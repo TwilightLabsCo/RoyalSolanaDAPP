@@ -26,7 +26,7 @@ const METAPLEX_PROGRAM_ID = new PublicKey('metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt
 const DAS_ENDPOINTS: Record<NetworkType, string | null> = {
   mainnet: 'https://mainnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
   devnet: 'https://devnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
-  testnet: null, // No DAS for testnet
+  testnet: 'https://testnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
 };
 
 // Get metadata PDA for a mint
@@ -312,20 +312,28 @@ export async function fetchNFTs(walletAddress: string): Promise<NFT[]> {
   const network = getCurrentNetwork();
   console.log(`Fetching NFTs for ${walletAddress} on ${network}`);
   
-  // Try DAS API first (faster and more reliable for mainnet/devnet)
-  const dasNFTs = await fetchNFTsWithDAS(walletAddress);
-  
-  if (dasNFTs.length > 0) {
-    console.log(`Found ${dasNFTs.length} NFTs via DAS`);
-    return dasNFTs;
+  // Try DAS API first (works on all networks with Helius)
+  try {
+    const dasNFTs = await fetchNFTsWithDAS(walletAddress);
+    
+    if (dasNFTs.length > 0) {
+      console.log(`Found ${dasNFTs.length} NFTs via DAS`);
+      return dasNFTs;
+    }
+  } catch (error) {
+    console.warn('DAS API failed, falling back to RPC:', error);
   }
   
-  // Fallback to RPC method
+  // Fallback to RPC method for all networks
   console.log('Falling back to RPC method for NFTs');
-  const rpcNFTs = await fetchNFTsWithRPC(walletAddress);
-  console.log(`Found ${rpcNFTs.length} NFTs via RPC`);
-  
-  return rpcNFTs;
+  try {
+    const rpcNFTs = await fetchNFTsWithRPC(walletAddress);
+    console.log(`Found ${rpcNFTs.length} NFTs via RPC`);
+    return rpcNFTs;
+  } catch (error) {
+    console.error('RPC NFT fetch also failed:', error);
+    return [];
+  }
 }
 
 // Get NFT floor price from Magic Eden API (mainnet only)

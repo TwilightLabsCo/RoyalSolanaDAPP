@@ -505,20 +505,40 @@ export function WalletSetup({ onWalletCreated }: WalletSetupProps) {
                     <Fingerprint className="w-5 h-5" />
                     Load with Passkey
                   </Button>
-                  
-                  <div className="relative my-4">
-                    <div className="absolute inset-0 flex items-center">
-                      <div className="w-full border-t border-border" />
-                    </div>
-                    <div className="relative flex justify-center text-xs">
-                      <span className="bg-background px-2 text-muted-foreground">or use seed phrase</span>
-                    </div>
-                  </div>
                 </>
               )}
 
+              {/* Security Key (YubiKey) option - show if supported */}
+              {securityKeySupported && (
+                <Button
+                  variant="glass"
+                  size="lg"
+                  className="w-full"
+                  onClick={handleSecurityKeyCreate}
+                  disabled={isLoading}
+                >
+                  {isLoading ? (
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                  ) : (
+                    <KeyRound className="w-5 h-5" />
+                  )}
+                  Create with YubiKey
+                </Button>
+              )}
+              
+              {(passkeySupported || securityKeySupported) && (
+                <div className="relative my-4">
+                  <div className="absolute inset-0 flex items-center">
+                    <div className="w-full border-t border-border" />
+                  </div>
+                  <div className="relative flex justify-center text-xs">
+                    <span className="bg-background px-2 text-muted-foreground">or use seed phrase</span>
+                  </div>
+                </div>
+              )}
+
               <Button
-                variant={passkeySupported ? "outline" : "royal"}
+                variant={passkeySupported || securityKeySupported ? "outline" : "royal"}
                 size="lg"
                 className="w-full"
                 onClick={handleCreateWallet}

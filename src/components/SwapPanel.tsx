@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
-import { ArrowDownUp, Search, Loader2, AlertCircle, ExternalLink, ChevronDown } from "lucide-react";
+import { ArrowDownUp, Search, Loader2, AlertCircle, ExternalLink, ChevronDown, AlertTriangle } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { WalletData, getKeypairFromWallet } from "@/lib/wallet";
 import {
@@ -12,7 +12,7 @@ import {
   QuoteResponse,
   formatTokenAmount,
 } from "@/lib/jupiter";
-import { getBalance } from "@/lib/solana";
+import { getBalance, getCurrentNetwork } from "@/lib/solana";
 
 interface SwapPanelProps {
   wallet: WalletData;
@@ -40,9 +40,12 @@ export function SwapPanel({ wallet, onSuccess }: SwapPanelProps) {
   const [tokenSearch, setTokenSearch] = useState("");
   const [searchResults, setSearchResults] = useState<JupiterToken[]>([]);
   const [balance, setBalance] = useState(0);
+  
+  const network = getCurrentNetwork();
+  const isMainnet = network === 'mainnet';
 
   useEffect(() => {
-    getBalance(wallet.publicKey).then(setBalance);
+    getBalance(wallet.publicKey).then(b => setBalance(b / 1e9));
   }, [wallet.publicKey]);
 
   const fetchQuote = useCallback(async () => {
@@ -155,7 +158,20 @@ export function SwapPanel({ wallet, onSuccess }: SwapPanelProps) {
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <div className="glass-card p-6 glow-soft">
+      {/* Mainnet Warning */}
+      {!isMainnet && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 flex items-start gap-3">
+          <AlertTriangle className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
+          <div>
+            <p className="font-medium text-amber-500">Mainnet Only</p>
+            <p className="text-sm text-muted-foreground">
+              Jupiter swap is only available on mainnet. Switch to mainnet in settings to use this feature.
+            </p>
+          </div>
+        </div>
+      )}
+
+      <div className={`glass-card p-6 glow-soft ${!isMainnet ? 'opacity-60 pointer-events-none' : ''}`}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-display font-semibold text-foreground">
             Jupiter Swap
@@ -181,7 +197,7 @@ export function SwapPanel({ wallet, onSuccess }: SwapPanelProps) {
             <span className="text-sm text-muted-foreground">You pay</span>
             {inputToken.symbol === 'SOL' && (
               <span className="text-xs text-muted-foreground">
-                Balance: {(balance / 1e9).toFixed(4)} SOL
+                Balance: {balance.toFixed(4)} SOL
               </span>
             )}
           </div>
