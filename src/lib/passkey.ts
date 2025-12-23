@@ -1,5 +1,6 @@
 // WebAuthn Passkey utilities for Royal Wallet
-// Implements standalone passkey wallet like Trust Wallet / Coinbase Base Wallet
+// Supports platform authenticators (Face ID, Touch ID, Windows Hello) and 
+// roaming authenticators (YubiKey, other security keys)
 import { Keypair } from '@solana/web3.js';
 
 export interface PasskeyCredential {
@@ -7,6 +8,7 @@ export interface PasskeyCredential {
   rawId: ArrayBuffer;
   type: 'public-key';
   publicKey?: ArrayBuffer;
+  authenticatorType?: 'platform' | 'cross-platform';
 }
 
 export interface StoredPasskeyWallet {
@@ -20,12 +22,15 @@ export interface StoredPasskeyWallet {
   // Salt for key derivation
   salt: string;
   createdAt: number;
+  // Whether this was created with a security key (YubiKey, etc.)
+  isSecurityKey?: boolean;
 }
 
 const RP_NAME = 'Royal Wallet';
 const RP_ID = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
 const PASSKEY_WALLET_KEY = 'royal_passkey_wallet';
 
+// Check if WebAuthn is supported
 export async function isPasskeySupported(): Promise<boolean> {
   if (typeof window === 'undefined') return false;
   try {
@@ -38,6 +43,17 @@ export async function isPasskeySupported(): Promise<boolean> {
     }
     
     return false;
+  } catch {
+    return false;
+  }
+}
+
+// Check if security keys (YubiKey, etc.) are supported
+export async function isSecurityKeySupported(): Promise<boolean> {
+  if (typeof window === 'undefined') return false;
+  try {
+    // Security keys work if WebAuthn is available
+    return !!window.PublicKeyCredential;
   } catch {
     return false;
   }
@@ -62,8 +78,30 @@ async function deriveKeyFromCredential(
   );
 }
 
-// Create a new passkey and derive a wallet from it
+// Create a new passkey wallet with platform authenticator (Face ID, Touch ID, Windows Hello)
 export async function createPasskeyWallet(): Promise<{
+  credential: PasskeyCredential;
+  keypair: Keypair;
+  walletKey: CryptoKey;
+  salt: Uint8Array;
+} | null> {
+  return createPasskeyWalletWithAuthenticator('platform');
+}
+
+// Create a new passkey wallet with security key (YubiKey, etc.)
+export async function createSecurityKeyWallet(): Promise<{
+  credential: PasskeyCredential;
+  keypair: Keypair;
+  walletKey: CryptoKey;
+  salt: Uint8Array;
+} | null> {
+  return createPasskeyWalletWithAuthenticator('cross-platform');
+}
+
+// Create passkey wallet with specified authenticator type
+async function createPasskeyWalletWithAuthenticator(
+  authenticatorAttachment: 'platform' | 'cross-platform'
+): Promise<{
   credential: PasskeyCredential;
   keypair: Keypair;
   walletKey: CryptoKey;
@@ -87,15 +125,16 @@ export async function createPasskeyWallet(): Promise<{
           displayName: 'Royal Wallet User',
         },
         pubKeyCredParams: [
-          { alg: -7, type: 'public-key' },   // ES256
+          { alg: -7, type: 'public-key' },   // ES256 (preferred for security keys)
           { alg: -257, type: 'public-key' }, // RS256
+          { alg: -8, type: 'public-key' },   // EdDSA
         ],
         authenticatorSelection: {
-          authenticatorAttachment: 'platform',
+          authenticatorAttachment,
           userVerification: 'required',
-          residentKey: 'preferred',
+          residentKey: authenticatorAttachment === 'platform' ? 'preferred' : 'discouraged',
         },
-        timeout: 60000,
+        timeout: 120000, // 2 minutes for security keys
         attestation: 'none',
       },
     }) as PublicKeyCredential | null;
@@ -131,6 +170,7 @@ export async function createPasskeyWallet(): Promise<{
         rawId: credential.rawId,
         type: 'public-key',
         publicKey: response.getPublicKey?.() || undefined,
+        authenticatorType: authenticatorAttachment,
       },
       keypair,
       walletKey,
@@ -156,7 +196,7 @@ function base64ToBase64Url(base64: string): string {
   return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 }
 
-// Authenticate with passkey - returns the credential for key derivation
+// Authenticate with passkey - works for both platform and security key authenticators
 export async function authenticatePasskey(credentialId?: string): Promise<{
   credential: PasskeyCredential;
 } | null> {
@@ -167,7 +207,7 @@ export async function authenticatePasskey(credentialId?: string): Promise<{
       challenge,
       rpId: RP_ID,
       userVerification: 'required',
-      timeout: 60000,
+      timeout: 120000, // 2 minutes for security keys
     };
 
     if (credentialId) {
@@ -177,6 +217,7 @@ export async function authenticatePasskey(credentialId?: string): Promise<{
         {
           id: base64ToArrayBuffer(credentialIdBase64),
           type: 'public-key',
+          transports: ['usb', 'nfc', 'ble', 'internal'], // Support all transport types
         },
       ];
     }
