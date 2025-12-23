@@ -22,20 +22,17 @@ export interface NFT {
 
 const METAPLEX_PROGRAM_ID = new PublicKey('metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s');
 
-// Network-specific DAS API endpoints for better NFT fetching
-// Using multiple endpoints for reliability
-const DAS_ENDPOINTS: Record<NetworkType, string[]> = {
+// Helius DAS API endpoints - DAS only works with Helius, not standard Solana RPC
+// Standard RPCs don't support getAssetsByOwner
+const HELIUS_DAS_ENDPOINTS: Record<NetworkType, string[]> = {
   mainnet: [
     'https://mainnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
-    'https://api.mainnet-beta.solana.com',
+    'https://rpc.helius.xyz/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
   ],
   devnet: [
     'https://devnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
-    'https://api.devnet.solana.com',
   ],
-  testnet: [
-    'https://api.testnet.solana.com',
-  ],
+  testnet: [],
 };
 
 // Get metadata PDA for a mint
@@ -167,32 +164,31 @@ async function fetchMetadataJSON(uri: string): Promise<NFTMetadata | null> {
   }
 }
 
-// Fetch NFTs using Helius DAS API (Digital Asset Standard) - more reliable for all networks
+// Fetch NFTs using Helius DAS API (Digital Asset Standard) - more reliable for mainnet/devnet
 async function fetchNFTsWithDAS(walletAddress: string): Promise<NFT[]> {
   const network = getCurrentNetwork();
-  const endpoints = DAS_ENDPOINTS[network];
+  const endpoints = HELIUS_DAS_ENDPOINTS[network];
   
   if (!endpoints || endpoints.length === 0) {
     console.log('DAS not available for', network);
     return [];
   }
   
-  // Try each endpoint
   for (const endpoint of endpoints) {
     try {
-      console.log(`Trying DAS endpoint: ${endpoint.split('?')[0]}`);
+      console.log(`Trying DAS endpoint: ${endpoint.split('?')[0]} for wallet ${walletAddress}`);
       
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           jsonrpc: '2.0',
-          id: 'royal-wallet',
+          id: 'royal-wallet-nft',
           method: 'getAssetsByOwner',
           params: {
             ownerAddress: walletAddress,
             page: 1,
-            limit: 100,
+            limit: 1000,
             displayOptions: {
               showCollectionMetadata: true,
               showFungible: false,
@@ -200,40 +196,56 @@ async function fetchNFTsWithDAS(walletAddress: string): Promise<NFT[]> {
             },
           },
         }),
-        signal: AbortSignal.timeout(15000),
+        signal: AbortSignal.timeout(25000),
       });
       
+      console.log(`DAS response status: ${response.status}`);
+      
       if (!response.ok) {
-        console.warn(`DAS endpoint returned ${response.status}, trying next...`);
+        const errorText = await response.text();
+        console.warn(`DAS endpoint returned ${response.status}: ${errorText}`);
         continue;
       }
       
       const data = await response.json();
+      console.log('DAS response:', JSON.stringify(data).slice(0, 500));
       
       if (data.error) {
-        console.warn(`DAS error: ${data.error.message}, trying next...`);
+        console.warn(`DAS error: ${data.error.message || JSON.stringify(data.error)}`);
         continue;
       }
       
       const items = data.result?.items || [];
+      console.log(`DAS returned ${items.length} total items`);
       
+      // Include more NFT interface types
       const nfts = items
-        .filter((item: any) => item.interface === 'V1_NFT' || item.interface === 'ProgrammableNFT')
+        .filter((item: any) => {
+          const iface = item.interface;
+          return iface === 'V1_NFT' || 
+                 iface === 'ProgrammableNFT' || 
+                 iface === 'V2_NFT' ||
+                 iface === 'Custom' ||
+                 (item.content?.metadata?.name && item.compression?.compressed);
+        })
         .map((item: any) => ({
           mint: item.id,
           name: item.content?.metadata?.name || 'Unknown NFT',
           symbol: item.content?.metadata?.symbol || '',
-          image: item.content?.links?.image || item.content?.files?.[0]?.uri || '',
+          image: transformUri(item.content?.links?.image || item.content?.files?.[0]?.uri || ''),
           description: item.content?.metadata?.description,
           attributes: item.content?.metadata?.attributes,
           collection: item.grouping?.find((g: any) => g.group_key === 'collection')?.group_value 
             || item.content?.metadata?.collection?.name,
         }));
       
-      console.log(`Found ${nfts.length} NFTs via DAS from ${endpoint.split('?')[0]}`);
-      return nfts;
+      console.log(`Found ${nfts.length} NFTs via DAS after filtering`);
+      
+      if (nfts.length > 0) {
+        return nfts;
+      }
     } catch (error) {
-      console.warn(`DAS endpoint failed: ${endpoint.split('?')[0]}`, error);
+      console.warn(`DAS endpoint failed:`, error);
       continue;
     }
   }
@@ -243,10 +255,14 @@ async function fetchNFTsWithDAS(walletAddress: string): Promise<NFT[]> {
 
 // Fallback: Fetch NFTs using traditional RPC method
 async function fetchNFTsWithRPC(walletAddress: string, retries = 3): Promise<NFT[]> {
+  console.log(`Starting RPC NFT fetch for ${walletAddress}`);
+  
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const connection = getConnection();
       const walletPubkey = new PublicKey(walletAddress);
+      
+      console.log(`RPC attempt ${attempt + 1}: fetching token accounts...`);
       
       // Get all token accounts with timeout
       const tokenAccounts = await Promise.race([
@@ -255,9 +271,11 @@ async function fetchNFTsWithRPC(walletAddress: string, retries = 3): Promise<NFT
           { programId: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA') }
         ),
         new Promise<never>((_, reject) => 
-          setTimeout(() => reject(new Error('Timeout')), 20000)
+          setTimeout(() => reject(new Error('Timeout fetching token accounts')), 25000)
         )
       ]);
+      
+      console.log(`Found ${tokenAccounts.value.length} total token accounts`);
       
       // Filter for NFTs (amount = 1, decimals = 0)
       const nftMints = tokenAccounts.value
@@ -270,7 +288,12 @@ async function fetchNFTsWithRPC(walletAddress: string, retries = 3): Promise<NFT
         })
         .map((account) => account.account.data.parsed.info.mint);
       
-      if (nftMints.length === 0) return [];
+      console.log(`Found ${nftMints.length} potential NFT mints`);
+      
+      if (nftMints.length === 0) {
+        console.log('No NFT mints found, returning empty');
+        return [];
+      }
       
       // Batch fetch metadata PDAs (limit to 50 for performance)
       const mintsToFetch = nftMints.slice(0, 50);
