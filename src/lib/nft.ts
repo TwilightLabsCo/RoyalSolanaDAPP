@@ -23,10 +23,19 @@ export interface NFT {
 const METAPLEX_PROGRAM_ID = new PublicKey('metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s');
 
 // Network-specific DAS API endpoints for better NFT fetching
-const DAS_ENDPOINTS: Record<NetworkType, string | null> = {
-  mainnet: 'https://mainnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
-  devnet: 'https://devnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
-  testnet: 'https://testnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
+// Using multiple endpoints for reliability
+const DAS_ENDPOINTS: Record<NetworkType, string[]> = {
+  mainnet: [
+    'https://mainnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
+    'https://api.mainnet-beta.solana.com',
+  ],
+  devnet: [
+    'https://devnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
+    'https://api.devnet.solana.com',
+  ],
+  testnet: [
+    'https://api.testnet.solana.com',
+  ],
 };
 
 // Get metadata PDA for a mint
@@ -161,63 +170,75 @@ async function fetchMetadataJSON(uri: string): Promise<NFTMetadata | null> {
 // Fetch NFTs using Helius DAS API (Digital Asset Standard) - more reliable for all networks
 async function fetchNFTsWithDAS(walletAddress: string): Promise<NFT[]> {
   const network = getCurrentNetwork();
-  const endpoint = DAS_ENDPOINTS[network];
+  const endpoints = DAS_ENDPOINTS[network];
   
-  if (!endpoint) {
+  if (!endpoints || endpoints.length === 0) {
     console.log('DAS not available for', network);
     return [];
   }
   
-  try {
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 'royal-wallet',
-        method: 'getAssetsByOwner',
-        params: {
-          ownerAddress: walletAddress,
-          page: 1,
-          limit: 100,
-          displayOptions: {
-            showCollectionMetadata: true,
-            showFungible: false,
-            showNativeBalance: false,
+  // Try each endpoint
+  for (const endpoint of endpoints) {
+    try {
+      console.log(`Trying DAS endpoint: ${endpoint.split('?')[0]}`);
+      
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 'royal-wallet',
+          method: 'getAssetsByOwner',
+          params: {
+            ownerAddress: walletAddress,
+            page: 1,
+            limit: 100,
+            displayOptions: {
+              showCollectionMetadata: true,
+              showFungible: false,
+              showNativeBalance: false,
+            },
           },
-        },
-      }),
-      signal: AbortSignal.timeout(20000),
-    });
-    
-    if (!response.ok) {
-      throw new Error(`DAS API error: ${response.status}`);
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+      
+      if (!response.ok) {
+        console.warn(`DAS endpoint returned ${response.status}, trying next...`);
+        continue;
+      }
+      
+      const data = await response.json();
+      
+      if (data.error) {
+        console.warn(`DAS error: ${data.error.message}, trying next...`);
+        continue;
+      }
+      
+      const items = data.result?.items || [];
+      
+      const nfts = items
+        .filter((item: any) => item.interface === 'V1_NFT' || item.interface === 'ProgrammableNFT')
+        .map((item: any) => ({
+          mint: item.id,
+          name: item.content?.metadata?.name || 'Unknown NFT',
+          symbol: item.content?.metadata?.symbol || '',
+          image: item.content?.links?.image || item.content?.files?.[0]?.uri || '',
+          description: item.content?.metadata?.description,
+          attributes: item.content?.metadata?.attributes,
+          collection: item.grouping?.find((g: any) => g.group_key === 'collection')?.group_value 
+            || item.content?.metadata?.collection?.name,
+        }));
+      
+      console.log(`Found ${nfts.length} NFTs via DAS from ${endpoint.split('?')[0]}`);
+      return nfts;
+    } catch (error) {
+      console.warn(`DAS endpoint failed: ${endpoint.split('?')[0]}`, error);
+      continue;
     }
-    
-    const data = await response.json();
-    
-    if (data.error) {
-      throw new Error(data.error.message);
-    }
-    
-    const items = data.result?.items || [];
-    
-    return items
-      .filter((item: any) => item.interface === 'V1_NFT' || item.interface === 'ProgrammableNFT')
-      .map((item: any) => ({
-        mint: item.id,
-        name: item.content?.metadata?.name || 'Unknown NFT',
-        symbol: item.content?.metadata?.symbol || '',
-        image: item.content?.links?.image || item.content?.files?.[0]?.uri || '',
-        description: item.content?.metadata?.description,
-        attributes: item.content?.metadata?.attributes,
-        collection: item.grouping?.find((g: any) => g.group_key === 'collection')?.group_value 
-          || item.content?.metadata?.collection?.name,
-      }));
-  } catch (error) {
-    console.error('DAS fetch failed:', error);
-    return [];
   }
+  
+  return [];
 }
 
 // Fallback: Fetch NFTs using traditional RPC method

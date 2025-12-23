@@ -35,23 +35,25 @@ export interface StakeAccountInfo {
 
 // Fetch validators from on-chain with retry logic and network-specific handling
 export async function fetchValidators(retries = 5): Promise<ValidatorInfo[]> {
-  const { getCurrentNetwork, NETWORKS } = await import('./solana');
+  const { getCurrentNetwork } = await import('./solana');
   const network = getCurrentNetwork();
   
-  // Direct endpoints for validator fetching (more reliable than going through connection pool)
-  const endpoints = [
-    network === 'mainnet' 
-      ? 'https://mainnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff'
-      : network === 'devnet'
-        ? 'https://api.devnet.solana.com'
-        : 'https://api.testnet.solana.com',
-    network === 'mainnet'
-      ? 'https://api.mainnet-beta.solana.com'
-      : network === 'devnet'
-        ? 'https://devnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff'
-        : 'https://testnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
-    'https://rpc.ankr.com/solana' + (network === 'devnet' ? '_devnet' : network === 'testnet' ? '_testnet' : ''),
-  ];
+  // Direct endpoints for validator fetching - prioritize public Solana RPCs
+  const endpoints = network === 'mainnet' 
+    ? [
+        'https://api.mainnet-beta.solana.com',
+        'https://rpc.ankr.com/solana',
+        'https://solana-mainnet.g.alchemy.com/v2/demo',
+        'https://mainnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
+      ]
+    : network === 'devnet'
+      ? [
+          'https://api.devnet.solana.com',
+          'https://rpc.ankr.com/solana_devnet',
+        ]
+      : [
+          'https://api.testnet.solana.com',
+        ];
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     const endpointIndex = attempt % endpoints.length;
@@ -66,11 +68,11 @@ export async function fetchValidators(retries = 5): Promise<ValidatorInfo[]> {
         confirmTransactionInitialTimeout: 60000,
       });
       
-      // Fetch vote accounts with longer timeout
+      // Fetch vote accounts with timeout
       const voteAccounts = await Promise.race([
         conn.getVoteAccounts('confirmed'),
         new Promise<never>((_, reject) => 
-          setTimeout(() => reject(new Error('Timeout fetching validators')), 45000)
+          setTimeout(() => reject(new Error('Timeout fetching validators')), 30000)
         )
       ]);
       
