@@ -34,7 +34,7 @@ export interface StakeAccountInfo {
 }
 
 // Fetch validators from on-chain with retry logic and network-specific handling
-export async function fetchValidators(retries = 4): Promise<ValidatorInfo[]> {
+export async function fetchValidators(retries = 5): Promise<ValidatorInfo[]> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const { getConnection, getCurrentNetwork, tryNextEndpoint } = await import('./solana');
@@ -43,29 +43,40 @@ export async function fetchValidators(retries = 4): Promise<ValidatorInfo[]> {
       
       console.log(`Fetching validators for ${network} (attempt ${attempt + 1})`);
       
-      // Use appropriate timeout based on network
-      const timeout = network === 'mainnet' ? 45000 : 30000;
+      // Use longer timeout for validator fetching
+      const timeout = 60000; // 60 seconds
       
       // Fetch vote accounts with timeout
       const voteAccounts = await Promise.race([
-        connection.getVoteAccounts(),
+        connection.getVoteAccounts('confirmed'),
         new Promise<never>((_, reject) => 
-          setTimeout(() => reject(new Error('Timeout')), timeout)
+          setTimeout(() => reject(new Error('Timeout fetching validators')), timeout)
         )
       ]);
       
-      const allValidators = [...(voteAccounts.current || []), ...(voteAccounts.delinquent || [])];
+      const currentValidators = voteAccounts.current || [];
+      const delinquentValidators = voteAccounts.delinquent || [];
+      const allValidators = [...currentValidators, ...delinquentValidators];
+      
+      console.log(`Raw validator counts - current: ${currentValidators.length}, delinquent: ${delinquentValidators.length}`);
       
       if (allValidators.length === 0) {
-        console.warn('No validators returned, retrying...');
-        throw new Error('No validators returned');
+        console.warn('No validators returned from RPC, trying next endpoint...');
+        if (attempt < retries) {
+          await tryNextEndpoint();
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          continue;
+        }
+        return [];
       }
       
       console.log(`Found ${allValidators.length} validators on ${network}`);
       
-      // Sort by activated stake and take top validators
-      const sortedValidators = allValidators
-        .filter(v => v.activatedStake > 0)
+      // Filter and sort validators
+      const activeValidators = allValidators.filter(v => v.activatedStake > 0);
+      console.log(`Active validators with stake: ${activeValidators.length}`);
+      
+      const sortedValidators = activeValidators
         .sort((a, b) => b.activatedStake - a.activatedStake)
         .slice(0, 100);
       
@@ -92,13 +103,18 @@ export async function fetchValidators(retries = 4): Promise<ValidatorInfo[]> {
         };
       });
 
+      console.log(`Returning ${validators.length} validators for staking`);
       return validators;
     } catch (error) {
       console.error(`Failed to fetch validators (attempt ${attempt + 1}):`, error);
       if (attempt < retries) {
-        const { tryNextEndpoint } = await import('./solana');
-        await tryNextEndpoint();
-        await new Promise(resolve => setTimeout(resolve, 1500));
+        try {
+          const { tryNextEndpoint } = await import('./solana');
+          await tryNextEndpoint();
+        } catch (e) {
+          console.error('Failed to switch endpoint:', e);
+        }
+        await new Promise(resolve => setTimeout(resolve, 2000));
         continue;
       }
       return [];
