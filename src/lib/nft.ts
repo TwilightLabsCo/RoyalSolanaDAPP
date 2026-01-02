@@ -23,16 +23,17 @@ export interface NFT {
 const METAPLEX_PROGRAM_ID = new PublicKey('metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s');
 
 // DAS API endpoints - use multiple providers for reliability
-// Shyft and Helius both support getAssetsByOwner
+// Shyft supports getAssetsByOwner DAS method
 const DAS_ENDPOINTS: Record<NetworkType, string[]> = {
   mainnet: [
-    // QuickNode public DAS
-    'https://virulent-white-shape.solana-mainnet.quiknode.pro/2ff50a82a24b93ad8f2cd33ec4f4f7dafa91cdb4/',
-    // Triton public RPC with DAS support
+    // Shyft public DAS - most reliable free option
     'https://rpc.shyft.to?api_key=whM0X6hLvLGNnVMQ',
+    // HelloMoon public DAS 
+    'https://mainnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
   ],
   devnet: [
     'https://rpc.shyft.to?api_key=whM0X6hLvLGNnVMQ',
+    'https://devnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
   ],
   testnet: [],
 };
