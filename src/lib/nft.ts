@@ -1,14 +1,5 @@
-import { PublicKey } from '@solana/web3.js';
-import { getConnection, getCurrentNetwork, tryNextEndpoint, NetworkType } from './solana';
-
-export interface NFTMetadata {
-  name: string;
-  symbol: string;
-  image: string;
-  description?: string;
-  attributes?: Array<{ trait_type: string; value: string }>;
-  collection?: { name: string; family?: string };
-}
+import { PublicKey, Connection } from '@solana/web3.js';
+import { getConnection, getCurrentNetwork, NetworkType } from './solana';
 
 export interface NFT {
   mint: string;
@@ -22,18 +13,27 @@ export interface NFT {
 
 const METAPLEX_PROGRAM_ID = new PublicKey('metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s');
 
-// DAS API endpoints - these require DAS-enabled RPCs
-// For NFTs, we'll primarily use the RPC fallback method since free DAS APIs are unreliable
-const DAS_ENDPOINTS: Record<NetworkType, string[]> = {
+// RPC endpoints for NFT fetching
+const NFT_RPC_ENDPOINTS: Record<NetworkType, string[]> = {
   mainnet: [
-    // Try public Helius (may be rate limited)
-    'https://mainnet.helius-rpc.com/?api-key=15e757df-0a36-4e3f-9a21-8a97eae85a9b',
+    'https://api.mainnet-beta.solana.com',
+    'https://rpc.ankr.com/solana',
+    'https://solana-mainnet.g.alchemy.com/v2/demo',
   ],
   devnet: [
-    'https://devnet.helius-rpc.com/?api-key=15e757df-0a36-4e3f-9a21-8a97eae85a9b',
+    'https://api.devnet.solana.com',
   ],
-  testnet: [],
+  testnet: [
+    'https://api.testnet.solana.com',
+  ],
 };
+
+// IPFS gateways
+const IPFS_GATEWAYS = [
+  'https://ipfs.io/ipfs/',
+  'https://cloudflare-ipfs.com/ipfs/',
+  'https://gateway.pinata.cloud/ipfs/',
+];
 
 // Get metadata PDA for a mint
 function getMetadataPDA(mint: PublicKey): PublicKey {
@@ -51,281 +51,135 @@ function getMetadataPDA(mint: PublicKey): PublicKey {
 // Parse on-chain metadata
 function parseMetadata(data: Buffer): { name: string; symbol: string; uri: string } | null {
   try {
-    // Skip the first byte (key) and 32 bytes (update authority)
-    let offset = 1 + 32;
+    let offset = 1 + 32; // Skip key and update authority
+    offset += 32; // Skip mint
     
-    // Read mint (32 bytes)
-    offset += 32;
-    
-    // Read name length and name
     const nameLength = data.readUInt32LE(offset);
     offset += 4;
     const name = data.slice(offset, offset + nameLength).toString('utf8').replace(/\0/g, '').trim();
     offset += nameLength;
     
-    // Read symbol length and symbol
     const symbolLength = data.readUInt32LE(offset);
     offset += 4;
     const symbol = data.slice(offset, offset + symbolLength).toString('utf8').replace(/\0/g, '').trim();
     offset += symbolLength;
     
-    // Read uri length and uri
     const uriLength = data.readUInt32LE(offset);
     offset += 4;
     const uri = data.slice(offset, offset + uriLength).toString('utf8').replace(/\0/g, '').trim();
     
     return { name, symbol, uri };
-  } catch (e) {
-    return null;
-  }
-}
-
-// IPFS gateways to try in order
-const IPFS_GATEWAYS = [
-  'https://ipfs.io/ipfs/',
-  'https://cloudflare-ipfs.com/ipfs/',
-  'https://gateway.pinata.cloud/ipfs/',
-  'https://dweb.link/ipfs/',
-  'https://nftstorage.link/ipfs/',
-];
-
-// Arweave gateway
-const ARWEAVE_GATEWAY = 'https://arweave.net/';
-
-// Transform URI to use proper gateways
-function transformUri(uri: string): string {
-  if (!uri) return '';
-  
-  // Handle IPFS
-  if (uri.startsWith('ipfs://')) {
-    return IPFS_GATEWAYS[0] + uri.replace('ipfs://', '');
-  }
-  
-  // Handle Arweave
-  if (uri.startsWith('ar://')) {
-    return ARWEAVE_GATEWAY + uri.replace('ar://', '');
-  }
-  
-  return uri;
-}
-
-// Fetch JSON metadata from URI with fallback gateways
-async function fetchMetadataJSON(uri: string): Promise<NFTMetadata | null> {
-  try {
-    let fetchUri = transformUri(uri);
-    
-    // Handle IPFS URIs with gateway fallbacks
-    if (uri.startsWith('ipfs://')) {
-      const ipfsHash = uri.replace('ipfs://', '');
-      
-      // Try each gateway
-      for (const gateway of IPFS_GATEWAYS) {
-        try {
-          const response = await fetch(gateway + ipfsHash, { 
-            signal: AbortSignal.timeout(8000) 
-          });
-          if (response.ok) {
-            const json = await response.json();
-            return {
-              name: json.name || 'Unknown',
-              symbol: json.symbol || '',
-              image: transformUri(json.image || ''),
-              description: json.description,
-              attributes: json.attributes,
-              collection: json.collection,
-            };
-          }
-        } catch {
-          continue;
-        }
-      }
-      return null;
-    }
-    
-    // Regular HTTP URIs
-    const response = await fetch(fetchUri, { 
-      signal: AbortSignal.timeout(8000) 
-    });
-    
-    if (!response.ok) return null;
-    
-    const json = await response.json();
-    
-    return {
-      name: json.name || 'Unknown',
-      symbol: json.symbol || '',
-      image: transformUri(json.image || ''),
-      description: json.description,
-      attributes: json.attributes,
-      collection: json.collection,
-    };
   } catch {
     return null;
   }
 }
 
-// Fetch NFTs using DAS API (Digital Asset Standard) - more reliable for mainnet/devnet
-async function fetchNFTsWithDAS(walletAddress: string): Promise<NFT[]> {
-  const network = getCurrentNetwork();
-  const endpoints = DAS_ENDPOINTS[network];
-  
-  if (!endpoints || endpoints.length === 0) {
-    console.log('DAS not available for', network);
-    return [];
+// Transform URI for IPFS/Arweave
+function transformUri(uri: string): string {
+  if (!uri) return '';
+  if (uri.startsWith('ipfs://')) {
+    return IPFS_GATEWAYS[0] + uri.replace('ipfs://', '');
   }
+  if (uri.startsWith('ar://')) {
+    return 'https://arweave.net/' + uri.replace('ar://', '');
+  }
+  return uri;
+}
+
+// Fetch JSON metadata with timeout
+async function fetchMetadataJSON(uri: string): Promise<any | null> {
+  const fetchUri = transformUri(uri);
+  
+  // For IPFS, try multiple gateways
+  if (uri.startsWith('ipfs://')) {
+    const hash = uri.replace('ipfs://', '');
+    for (const gateway of IPFS_GATEWAYS) {
+      try {
+        const response = await fetch(gateway + hash, { 
+          signal: AbortSignal.timeout(8000) 
+        });
+        if (response.ok) return response.json();
+      } catch {
+        continue;
+      }
+    }
+    return null;
+  }
+  
+  try {
+    const response = await fetch(fetchUri, { signal: AbortSignal.timeout(8000) });
+    if (!response.ok) return null;
+    return response.json();
+  } catch {
+    return null;
+  }
+}
+
+// Main NFT fetch function
+export async function fetchNFTs(walletAddress: string): Promise<NFT[]> {
+  const network = getCurrentNetwork();
+  const endpoints = NFT_RPC_ENDPOINTS[network];
+  
+  console.log(`Fetching NFTs for ${walletAddress} on ${network}`);
   
   for (const endpoint of endpoints) {
     try {
-      console.log(`Trying DAS endpoint: ${endpoint.split('?')[0]} for wallet ${walletAddress}`);
+      console.log(`Trying NFT endpoint: ${endpoint}`);
+      const conn = new Connection(endpoint, { commitment: 'confirmed' });
       
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 'royal-wallet-nft',
-          method: 'getAssetsByOwner',
-          params: {
-            ownerAddress: walletAddress,
-            page: 1,
-            limit: 1000,
-            displayOptions: {
-              showCollectionMetadata: true,
-              showFungible: false,
-              showNativeBalance: false,
-            },
-          },
-        }),
-        signal: AbortSignal.timeout(25000),
-      });
-      
-      console.log(`DAS response status: ${response.status}`);
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.warn(`DAS endpoint returned ${response.status}: ${errorText}`);
-        continue;
-      }
-      
-      const data = await response.json();
-      console.log('DAS response:', JSON.stringify(data).slice(0, 500));
-      
-      if (data.error) {
-        console.warn(`DAS error: ${data.error.message || JSON.stringify(data.error)}`);
-        continue;
-      }
-      
-      const items = data.result?.items || [];
-      console.log(`DAS returned ${items.length} total items`);
-      
-      // Include more NFT interface types
-      const nfts = items
-        .filter((item: any) => {
-          const iface = item.interface;
-          return iface === 'V1_NFT' || 
-                 iface === 'ProgrammableNFT' || 
-                 iface === 'V2_NFT' ||
-                 iface === 'Custom' ||
-                 (item.content?.metadata?.name && item.compression?.compressed);
-        })
-        .map((item: any) => ({
-          mint: item.id,
-          name: item.content?.metadata?.name || 'Unknown NFT',
-          symbol: item.content?.metadata?.symbol || '',
-          image: transformUri(item.content?.links?.image || item.content?.files?.[0]?.uri || ''),
-          description: item.content?.metadata?.description,
-          attributes: item.content?.metadata?.attributes,
-          collection: item.grouping?.find((g: any) => g.group_key === 'collection')?.group_value 
-            || item.content?.metadata?.collection?.name,
-        }));
-      
-      console.log(`Found ${nfts.length} NFTs via DAS after filtering`);
-      
-      if (nfts.length > 0) {
-        return nfts;
-      }
-    } catch (error) {
-      console.warn(`DAS endpoint failed:`, error);
-      continue;
-    }
-  }
-  
-  return [];
-}
-
-// Fallback: Fetch NFTs using traditional RPC method
-async function fetchNFTsWithRPC(walletAddress: string, retries = 3): Promise<NFT[]> {
-  console.log(`Starting RPC NFT fetch for ${walletAddress}`);
-  
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      const connection = getConnection();
-      const walletPubkey = new PublicKey(walletAddress);
-      
-      console.log(`RPC attempt ${attempt + 1}: fetching token accounts...`);
-      
-      // Get all token accounts with timeout
+      // Get all token accounts
       const tokenAccounts = await Promise.race([
-        connection.getParsedTokenAccountsByOwner(
-          walletPubkey,
+        conn.getParsedTokenAccountsByOwner(
+          new PublicKey(walletAddress),
           { programId: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA') }
         ),
         new Promise<never>((_, reject) => 
-          setTimeout(() => reject(new Error('Timeout fetching token accounts')), 25000)
-        )
+          setTimeout(() => reject(new Error('Timeout')), 20000)
+        ),
       ]);
       
-      console.log(`Found ${tokenAccounts.value.length} total token accounts`);
+      console.log(`Found ${tokenAccounts.value.length} token accounts`);
       
-      // Filter for NFTs (amount = 1, decimals = 0)
+      // Filter for NFTs (amount=1, decimals=0)
       const nftMints = tokenAccounts.value
         .filter((account) => {
           const info = account.account.data.parsed.info;
-          return (
-            info.tokenAmount.decimals === 0 &&
-            info.tokenAmount.uiAmount === 1
-          );
+          return info.tokenAmount.decimals === 0 && info.tokenAmount.uiAmount === 1;
         })
         .map((account) => account.account.data.parsed.info.mint);
       
       console.log(`Found ${nftMints.length} potential NFT mints`);
       
       if (nftMints.length === 0) {
-        console.log('No NFT mints found, returning empty');
         return [];
       }
       
-      // Batch fetch metadata PDAs (limit to 50 for performance)
-      const mintsToFetch = nftMints.slice(0, 50);
+      // Limit to 30 NFTs for performance
+      const mintsToFetch = nftMints.slice(0, 30);
+      
+      // Get metadata PDAs
       const metadataPDAs = mintsToFetch.map(mint => getMetadataPDA(new PublicKey(mint)));
       
-      // Fetch all account infos in batches of 100
-      const batchSize = 100;
-      const allAccountInfos: (any | null)[] = [];
+      // Fetch all metadata accounts
+      const metadataAccounts = await conn.getMultipleAccountsInfo(metadataPDAs);
       
-      for (let i = 0; i < metadataPDAs.length; i += batchSize) {
-        const batch = metadataPDAs.slice(i, i + batchSize);
-        const infos = await connection.getMultipleAccountsInfo(batch);
-        allAccountInfos.push(...infos);
-      }
-      
-      // Parse on-chain metadata and get URIs
-      const nftDataPromises = mintsToFetch.map(async (mint, index) => {
+      // Process each NFT
+      const nftPromises = mintsToFetch.map(async (mint, index) => {
         try {
-          const accountInfo = allAccountInfos[index];
+          const accountInfo = metadataAccounts[index];
           if (!accountInfo) return null;
           
-          const onChainMeta = parseMetadata(accountInfo.data);
+          const onChainMeta = parseMetadata(accountInfo.data as Buffer);
           if (!onChainMeta || !onChainMeta.uri) return null;
           
-          // Fetch off-chain metadata
+          // Try to fetch off-chain metadata
           const jsonMeta = await fetchMetadataJSON(onChainMeta.uri);
           
           return {
             mint,
             name: jsonMeta?.name || onChainMeta.name || 'Unknown NFT',
             symbol: jsonMeta?.symbol || onChainMeta.symbol || '',
-            image: jsonMeta?.image || '',
+            image: transformUri(jsonMeta?.image || ''),
             description: jsonMeta?.description,
             attributes: jsonMeta?.attributes,
             collection: jsonMeta?.collection?.name,
@@ -335,57 +189,23 @@ async function fetchNFTsWithRPC(walletAddress: string, retries = 3): Promise<NFT
         }
       });
       
-      const results = await Promise.all(nftDataPromises);
-      return results.filter((nft): nft is NFT => nft !== null);
+      const results = await Promise.all(nftPromises);
+      const nfts = results.filter((nft): nft is NFT => nft !== null);
+      
+      console.log(`Successfully fetched ${nfts.length} NFTs`);
+      return nfts;
       
     } catch (error) {
-      console.error(`Failed to fetch NFTs (attempt ${attempt + 1}):`, error);
-      if (attempt < retries) {
-        await tryNextEndpoint();
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        continue;
-      }
-      return [];
+      console.warn(`Endpoint ${endpoint} failed:`, error);
+      continue;
     }
   }
+  
+  console.error('All endpoints failed for NFT fetch');
   return [];
 }
 
-// Main fetch function - tries DAS first, falls back to RPC
-export async function fetchNFTs(walletAddress: string): Promise<NFT[]> {
-  const network = getCurrentNetwork();
-  console.log(`Fetching NFTs for ${walletAddress} on ${network}`);
-  
-  // Try RPC method first - more reliable without paid DAS API keys
-  console.log('Trying RPC method for NFTs first...');
-  try {
-    const rpcNFTs = await fetchNFTsWithRPC(walletAddress);
-    if (rpcNFTs.length > 0) {
-      console.log(`Found ${rpcNFTs.length} NFTs via RPC`);
-      return rpcNFTs;
-    }
-  } catch (error) {
-    console.warn('RPC NFT fetch failed:', error);
-  }
-  
-  // Fallback to DAS API 
-  try {
-    console.log('Trying DAS API as fallback...');
-    const dasNFTs = await fetchNFTsWithDAS(walletAddress);
-    
-    if (dasNFTs.length > 0) {
-      console.log(`Found ${dasNFTs.length} NFTs via DAS`);
-      return dasNFTs;
-    }
-  } catch (error) {
-    console.warn('DAS API also failed:', error);
-  }
-  
-  console.log('No NFTs found via either method');
-  return [];
-}
-
-// Get NFT floor price from Magic Eden API (mainnet only)
+// Get NFT collection info from Magic Eden (mainnet only)
 export async function getNFTCollectionInfo(collectionSymbol: string): Promise<{
   floorPrice?: number;
   listedCount?: number;

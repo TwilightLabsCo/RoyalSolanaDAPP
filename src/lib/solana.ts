@@ -9,125 +9,129 @@ import {
   ParsedAccountData,
 } from '@solana/web3.js';
 
-// Network endpoints - using official Solana public RPCs as primary
-export const NETWORKS = {
-  mainnet: 'https://api.mainnet-beta.solana.com',
-  devnet: 'https://api.devnet.solana.com',
-  testnet: 'https://api.testnet.solana.com',
-} as const;
+// Network configuration
+export type NetworkType = 'mainnet' | 'devnet' | 'testnet';
 
-// Fallback endpoints for each network
-const FALLBACK_ENDPOINTS = {
+// RPC endpoints per network - ordered by reliability
+const RPC_ENDPOINTS: Record<NetworkType, string[]> = {
   mainnet: [
+    'https://api.mainnet-beta.solana.com',
     'https://rpc.ankr.com/solana',
     'https://solana-mainnet.g.alchemy.com/v2/demo',
-    'https://solana.public-rpc.com',
   ],
   devnet: [
+    'https://api.devnet.solana.com',
     'https://rpc.ankr.com/solana_devnet',
   ],
-  testnet: [],
-} as const;
+  testnet: [
+    'https://api.testnet.solana.com',
+  ],
+};
 
-export type NetworkType = keyof typeof NETWORKS;
-
-let connection: Connection | null = null;
-let currentNetwork: NetworkType = 'devnet';
+// State
+let currentNetwork: NetworkType = 'mainnet';
 let currentEndpointIndex = 0;
+let connectionCache: Connection | null = null;
 
-function getAllEndpoints(network: NetworkType): string[] {
-  return [NETWORKS[network], ...(FALLBACK_ENDPOINTS[network] || [])];
-}
-
-export function getConnection(): Connection {
-  if (!connection) {
-    const endpoints = getAllEndpoints(currentNetwork);
-    connection = new Connection(endpoints[currentEndpointIndex] || endpoints[0], {
-      commitment: 'confirmed',
-      confirmTransactionInitialTimeout: 60000,
-      fetch: async (url, options) => {
-        // Add timeout to fetch requests
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 30000);
-        try {
-          const response = await fetch(url, {
-            ...options,
-            signal: controller.signal,
-          });
-          clearTimeout(timeoutId);
-          return response;
-        } catch (error) {
-          clearTimeout(timeoutId);
-          throw error;
-        }
-      },
-    });
-  }
-  return connection;
-}
-
-export async function tryNextEndpoint(): Promise<Connection> {
-  const endpoints = getAllEndpoints(currentNetwork);
-  currentEndpointIndex = (currentEndpointIndex + 1) % endpoints.length;
-  connection = new Connection(endpoints[currentEndpointIndex], {
-    commitment: 'confirmed',
-    confirmTransactionInitialTimeout: 60000,
-  });
-  return connection;
-}
-
-export function switchNetwork(network: NetworkType): void {
-  currentNetwork = network;
-  currentEndpointIndex = 0;
-  const endpoints = getAllEndpoints(network);
-  connection = new Connection(endpoints[0], {
-    commitment: 'confirmed',
-    confirmTransactionInitialTimeout: 60000,
-  });
-}
-
+// Get current network
 export function getCurrentNetwork(): NetworkType {
   return currentNetwork;
 }
 
+// Get all endpoints for current network
+function getEndpoints(): string[] {
+  return RPC_ENDPOINTS[currentNetwork];
+}
+
+// Get current endpoint URL
+function getCurrentEndpoint(): string {
+  const endpoints = getEndpoints();
+  return endpoints[currentEndpointIndex % endpoints.length];
+}
+
+// Create a new connection with timeout
+function createConnection(endpoint: string): Connection {
+  return new Connection(endpoint, {
+    commitment: 'confirmed',
+    confirmTransactionInitialTimeout: 60000,
+  });
+}
+
+// Get connection (cached)
+export function getConnection(): Connection {
+  if (!connectionCache) {
+    connectionCache = createConnection(getCurrentEndpoint());
+  }
+  return connectionCache;
+}
+
+// Switch to next endpoint
+export function tryNextEndpoint(): Connection {
+  const endpoints = getEndpoints();
+  currentEndpointIndex = (currentEndpointIndex + 1) % endpoints.length;
+  connectionCache = createConnection(getCurrentEndpoint());
+  console.log(`Switched to endpoint: ${getCurrentEndpoint()}`);
+  return connectionCache;
+}
+
+// Switch network
+export function switchNetwork(network: NetworkType): void {
+  if (network !== currentNetwork) {
+    currentNetwork = network;
+    currentEndpointIndex = 0;
+    connectionCache = null;
+    console.log(`Switched to network: ${network}`);
+  }
+}
+
+// Fetch with timeout helper
+async function fetchWithTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number = 15000
+): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Request timeout')), timeoutMs)
+    ),
+  ]);
+}
+
+// Get SOL balance with retry
 export async function getBalance(publicKey: string): Promise<number> {
-  const maxRetries = 3;
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
+  const endpoints = getEndpoints();
+  
+  for (let i = 0; i < endpoints.length; i++) {
     try {
-      const conn = getConnection();
+      const conn = createConnection(endpoints[i]);
       const pubKey = new PublicKey(publicKey);
-      const balance = await Promise.race([
-        conn.getBalance(pubKey),
-        new Promise<never>((_, reject) => 
-          setTimeout(() => reject(new Error('Balance fetch timeout')), 15000)
-        )
-      ]);
+      const balance = await fetchWithTimeout(conn.getBalance(pubKey), 10000);
       return balance;
     } catch (error) {
-      console.error(`Failed to get balance (attempt ${attempt + 1}):`, error);
-      if (attempt < maxRetries - 1) {
-        await tryNextEndpoint();
-        await new Promise(resolve => setTimeout(resolve, 500));
-        continue;
+      console.warn(`Balance fetch failed on ${endpoints[i]}:`, error);
+      if (i === endpoints.length - 1) {
+        return 0;
       }
-      return 0;
     }
   }
   return 0;
 }
 
+// Get SOL price from CoinGecko
 export async function getSolPrice(): Promise<number> {
   try {
     const response = await fetch(
-      'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd'
+      'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd',
+      { signal: AbortSignal.timeout(5000) }
     );
     const data = await response.json();
-    return data.solana?.usd || 0;
+    return data.solana?.usd || 145;
   } catch {
-    return 145; // Fallback price
+    return 145;
   }
 }
 
+// Token account interface
 export interface TokenAccount {
   mint: string;
   amount: number;
@@ -137,30 +141,43 @@ export interface TokenAccount {
   uiAmount: number;
 }
 
+// Get token accounts
 export async function getTokenAccounts(publicKey: string): Promise<TokenAccount[]> {
-  try {
-    const conn = getConnection();
-    const pubKey = new PublicKey(publicKey);
-    const tokenAccounts = await conn.getParsedTokenAccountsByOwner(pubKey, {
-      programId: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'),
-    });
+  const endpoints = getEndpoints();
+  
+  for (let i = 0; i < endpoints.length; i++) {
+    try {
+      const conn = createConnection(endpoints[i]);
+      const pubKey = new PublicKey(publicKey);
+      
+      const tokenAccounts = await fetchWithTimeout(
+        conn.getParsedTokenAccountsByOwner(pubKey, {
+          programId: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'),
+        }),
+        20000
+      );
 
-    return tokenAccounts.value.map((account) => {
-      const parsedInfo = account.account.data as ParsedAccountData;
-      const info = parsedInfo.parsed.info;
-      return {
-        mint: info.mint,
-        amount: parseInt(info.tokenAmount.amount),
-        decimals: info.tokenAmount.decimals,
-        uiAmount: info.tokenAmount.uiAmount || 0,
-      };
-    });
-  } catch (error) {
-    console.error('Failed to get token accounts:', error);
-    return [];
+      return tokenAccounts.value.map((account) => {
+        const parsedInfo = account.account.data as ParsedAccountData;
+        const info = parsedInfo.parsed.info;
+        return {
+          mint: info.mint,
+          amount: parseInt(info.tokenAmount.amount),
+          decimals: info.tokenAmount.decimals,
+          uiAmount: info.tokenAmount.uiAmount || 0,
+        };
+      });
+    } catch (error) {
+      console.warn(`Token accounts fetch failed on ${endpoints[i]}:`, error);
+      if (i === endpoints.length - 1) {
+        return [];
+      }
+    }
   }
+  return [];
 }
 
+// Transaction history interface
 export interface TransactionHistory {
   signature: string;
   slot: number;
@@ -172,6 +189,7 @@ export interface TransactionHistory {
   to?: string;
 }
 
+// Get transaction history
 export async function getTransactionHistory(
   publicKey: string,
   limit: number = 10
@@ -179,27 +197,25 @@ export async function getTransactionHistory(
   try {
     const conn = getConnection();
     const pubKey = new PublicKey(publicKey);
-    const signatures = await conn.getSignaturesForAddress(pubKey, { limit });
+    const signatures = await fetchWithTimeout(
+      conn.getSignaturesForAddress(pubKey, { limit }),
+      15000
+    );
 
-    const transactions: TransactionHistory[] = [];
-    
-    for (const sig of signatures) {
-      transactions.push({
-        signature: sig.signature,
-        slot: sig.slot,
-        blockTime: sig.blockTime,
-        status: sig.err ? 'failed' : 'success',
-        type: 'unknown',
-      });
-    }
-
-    return transactions;
+    return signatures.map((sig) => ({
+      signature: sig.signature,
+      slot: sig.slot,
+      blockTime: sig.blockTime,
+      status: sig.err ? 'failed' : 'success',
+      type: 'unknown' as const,
+    }));
   } catch (error) {
     console.error('Failed to get transaction history:', error);
     return [];
   }
 }
 
+// Send SOL
 export async function sendSol(
   fromKeypair: Keypair,
   toAddress: string,
@@ -221,16 +237,14 @@ export async function sendSol(
   return signature;
 }
 
+// Request airdrop (devnet/testnet only)
 export async function requestAirdrop(publicKey: string, amount: number = 1): Promise<string> {
   const conn = getConnection();
   const pubKey = new PublicKey(publicKey);
   
-  // Get latest blockhash for confirmation
   const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash();
-  
   const signature = await conn.requestAirdrop(pubKey, amount * LAMPORTS_PER_SOL);
   
-  // Use the proper confirmation method
   await conn.confirmTransaction({
     signature,
     blockhash,
@@ -240,7 +254,7 @@ export async function requestAirdrop(publicKey: string, amount: number = 1): Pro
   return signature;
 }
 
-// Staking related functions
+// Stake account interface
 export interface StakeAccount {
   pubkey: string;
   lamports: number;
@@ -248,57 +262,50 @@ export interface StakeAccount {
   state: 'activating' | 'active' | 'deactivating' | 'inactive';
 }
 
+// Get stake accounts for a wallet
 export async function getStakeAccounts(publicKey: string): Promise<StakeAccount[]> {
-  try {
-    const conn = getConnection();
-    const pubKey = new PublicKey(publicKey);
-    const stakeAccounts = await conn.getParsedProgramAccounts(
-      new PublicKey('Stake11111111111111111111111111111111111111'),
-      {
-        filters: [
+  const endpoints = getEndpoints();
+  
+  for (let i = 0; i < endpoints.length; i++) {
+    try {
+      const conn = createConnection(endpoints[i]);
+      const pubKey = new PublicKey(publicKey);
+      
+      const stakeAccounts = await fetchWithTimeout(
+        conn.getParsedProgramAccounts(
+          new PublicKey('Stake11111111111111111111111111111111111111'),
           {
-            memcmp: {
-              offset: 12,
-              bytes: pubKey.toBase58(),
-            },
-          },
-        ],
+            filters: [
+              {
+                memcmp: {
+                  offset: 12,
+                  bytes: pubKey.toBase58(),
+                },
+              },
+            ],
+          }
+        ),
+        20000
+      );
+
+      return stakeAccounts.map((account) => ({
+        pubkey: account.pubkey.toBase58(),
+        lamports: account.account.lamports,
+        state: 'active' as const,
+      }));
+    } catch (error) {
+      console.warn(`Stake accounts fetch failed on ${endpoints[i]}:`, error);
+      if (i === endpoints.length - 1) {
+        return [];
       }
-    );
-
-    return stakeAccounts.map((account) => ({
-      pubkey: account.pubkey.toBase58(),
-      lamports: account.account.lamports,
-      state: 'active' as const,
-    }));
-  } catch (error) {
-    console.error('Failed to get stake accounts:', error);
-    return [];
+    }
   }
+  return [];
 }
 
-export interface ValidatorInfo {
-  votePubkey: string;
-  nodePubkey: string;
-  activatedStake: number;
-  commission: number;
-  epochCredits: number;
-}
-
-export async function getValidators(): Promise<ValidatorInfo[]> {
-  try {
-    const conn = getConnection();
-    const voteAccounts = await conn.getVoteAccounts();
-    
-    return voteAccounts.current.slice(0, 20).map((v) => ({
-      votePubkey: v.votePubkey,
-      nodePubkey: v.nodePubkey,
-      activatedStake: v.activatedStake,
-      commission: v.commission,
-      epochCredits: v.epochCredits[v.epochCredits.length - 1]?.[1] || 0,
-    }));
-  } catch (error) {
-    console.error('Failed to get validators:', error);
-    return [];
-  }
-}
+// Legacy exports for compatibility
+export const NETWORKS = {
+  mainnet: RPC_ENDPOINTS.mainnet[0],
+  devnet: RPC_ENDPOINTS.devnet[0],
+  testnet: RPC_ENDPOINTS.testnet[0],
+} as const;

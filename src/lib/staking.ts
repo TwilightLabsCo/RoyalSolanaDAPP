@@ -10,7 +10,7 @@ import {
   SystemProgram,
   sendAndConfirmTransaction,
 } from '@solana/web3.js';
-import { getConnection } from './solana';
+import { getConnection, getCurrentNetwork, NetworkType } from './solana';
 
 export interface ValidatorInfo {
   votePubkey: string;
@@ -33,92 +33,69 @@ export interface StakeAccountInfo {
   deactivationEpoch?: number;
 }
 
-// Fetch validators from on-chain with retry logic and network-specific handling
-export async function fetchValidators(retries = 8): Promise<ValidatorInfo[]> {
-  const { getCurrentNetwork } = await import('./solana');
-  const network = getCurrentNetwork();
-  
-  // Use multiple RPC endpoints - official Solana RPC is most reliable for getVoteAccounts
-  const endpoints = network === 'mainnet' 
-    ? [
-        // Official Solana RPC - most reliable for validator queries
-        'https://api.mainnet-beta.solana.com',
-        'https://rpc.ankr.com/solana',
-        'https://solana-mainnet.g.alchemy.com/v2/demo',
-        'https://solana.public-rpc.com',
-      ]
-    : network === 'devnet'
-      ? [
-          'https://api.devnet.solana.com',
-          'https://rpc.ankr.com/solana_devnet',
-        ]
-      : [
-          'https://api.testnet.solana.com',
-        ];
+// RPC endpoints specifically for validator fetching (heavy operation)
+const VALIDATOR_RPC_ENDPOINTS: Record<NetworkType, string[]> = {
+  mainnet: [
+    'https://api.mainnet-beta.solana.com',
+    'https://rpc.ankr.com/solana',
+    'https://solana-mainnet.g.alchemy.com/v2/demo',
+  ],
+  devnet: [
+    'https://api.devnet.solana.com',
+  ],
+  testnet: [
+    'https://api.testnet.solana.com',
+  ],
+};
 
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    const endpointIndex = attempt % endpoints.length;
-    const endpoint = endpoints[endpointIndex];
-    
+// Fetch validators with simple retry across endpoints
+export async function fetchValidators(): Promise<ValidatorInfo[]> {
+  const network = getCurrentNetwork();
+  const endpoints = VALIDATOR_RPC_ENDPOINTS[network];
+  
+  console.log(`Fetching validators for ${network}...`);
+  
+  for (const endpoint of endpoints) {
     try {
-      console.log(`Fetching validators for ${network} (attempt ${attempt + 1}/${retries + 1}) using ${endpoint.split('?')[0]}`);
+      console.log(`Trying endpoint: ${endpoint}`);
       
-      // Create a fresh connection for each attempt with longer timeout
       const conn = new Connection(endpoint, {
         commitment: 'confirmed',
-        confirmTransactionInitialTimeout: 120000,
-        fetch: (input, init) => {
-          return fetch(input, {
-            ...init,
-            signal: AbortSignal.timeout(45000),
-          });
-        },
       });
       
-      // Fetch vote accounts with timeout
-      const voteAccounts = await Promise.race([
-        conn.getVoteAccounts('confirmed'),
-        new Promise<never>((_, reject) => 
-          setTimeout(() => reject(new Error('Timeout fetching validators')), 45000)
-        )
-      ]);
+      // Fetch vote accounts with 30s timeout
+      const voteAccountsPromise = conn.getVoteAccounts('confirmed');
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Timeout')), 30000)
+      );
+      
+      const voteAccounts = await Promise.race([voteAccountsPromise, timeoutPromise]);
       
       const currentValidators = voteAccounts.current || [];
-      const delinquentValidators = voteAccounts.delinquent || [];
-      const allValidators = [...currentValidators, ...delinquentValidators];
+      console.log(`Found ${currentValidators.length} current validators`);
       
-      console.log(`Raw validator counts - current: ${currentValidators.length}, delinquent: ${delinquentValidators.length}`);
-      
-      if (allValidators.length === 0) {
-        console.warn('No validators returned, trying next endpoint...');
-        await new Promise(resolve => setTimeout(resolve, 500));
+      if (currentValidators.length === 0) {
+        console.log('No validators found, trying next endpoint...');
         continue;
       }
       
-      console.log(`Found ${allValidators.length} validators on ${network}`);
-      
-      // Filter and sort validators - include validators with stake
-      const activeValidators = allValidators.filter(v => v.activatedStake > 0);
-      console.log(`Active validators with stake: ${activeValidators.length}`);
-      
-      // If no active validators, use all validators
-      const validatorsToUse = activeValidators.length > 0 ? activeValidators : allValidators;
-      
-      const sortedValidators = validatorsToUse
+      // Sort by stake and take top 100
+      const sorted = currentValidators
+        .filter(v => v.activatedStake > 0)
         .sort((a, b) => b.activatedStake - a.activatedStake)
         .slice(0, 100);
       
-      const validators = sortedValidators.map((v) => {
-        // Calculate estimated APY based on commission and epoch credits
+      const validators: ValidatorInfo[] = sorted.map((v) => {
+        // Calculate APY based on commission
+        const baseApy = network === 'mainnet' ? 7.0 : 8.0;
+        const estimatedApy = baseApy * (1 - v.commission / 100);
+        
+        // Get epoch credits
         const lastCredits = v.epochCredits[v.epochCredits.length - 1];
         const prevCredits = v.epochCredits[v.epochCredits.length - 2];
         const creditsPerEpoch = lastCredits && prevCredits 
           ? lastCredits[1] - prevCredits[1] 
           : 0;
-        
-        // Base APY varies by network
-        const baseApy = network === 'mainnet' ? 7.0 : 8.0;
-        const estimatedApy = baseApy * (1 - v.commission / 100);
         
         return {
           votePubkey: v.votePubkey,
@@ -130,18 +107,17 @@ export async function fetchValidators(retries = 8): Promise<ValidatorInfo[]> {
           apy: estimatedApy,
         };
       });
-
-      console.log(`Returning ${validators.length} validators for staking`);
+      
+      console.log(`Returning ${validators.length} validators`);
       return validators;
+      
     } catch (error) {
-      console.error(`Failed to fetch validators (attempt ${attempt + 1}):`, error);
-      if (attempt < retries) {
-        await new Promise(resolve => setTimeout(resolve, 800));
-        continue;
-      }
-      return [];
+      console.warn(`Endpoint ${endpoint} failed:`, error);
+      continue;
     }
   }
+  
+  console.error('All endpoints failed for validator fetch');
   return [];
 }
 
@@ -216,13 +192,11 @@ export async function createStakeAccount(
   const stakeKeypair = Keypair.generate();
   const lamports = Math.round(amountSol * LAMPORTS_PER_SOL);
   
-  // Get minimum rent for stake account
   const minimumRent = await connection.getMinimumBalanceForRentExemption(200);
   const totalLamports = lamports + minimumRent;
 
   const transaction = new Transaction();
 
-  // Create stake account
   transaction.add(
     SystemProgram.createAccount({
       fromPubkey: fromKeypair.publicKey,
@@ -233,7 +207,6 @@ export async function createStakeAccount(
     })
   );
 
-  // Initialize stake account
   transaction.add(
     StakeProgram.initialize({
       stakePubkey: stakeKeypair.publicKey,
@@ -245,7 +218,6 @@ export async function createStakeAccount(
     })
   );
 
-  // Delegate to validator
   transaction.add(
     StakeProgram.delegate({
       stakePubkey: stakeKeypair.publicKey,
@@ -262,7 +234,7 @@ export async function createStakeAccount(
   return signature;
 }
 
-// Deactivate stake (start unstaking)
+// Deactivate stake
 export async function deactivateStake(
   fromKeypair: Keypair,
   stakeAccountPubkey: string
@@ -280,7 +252,7 @@ export async function deactivateStake(
   return signature;
 }
 
-// Withdraw stake (after deactivation is complete)
+// Withdraw stake
 export async function withdrawStake(
   fromKeypair: Keypair,
   stakeAccountPubkey: string
@@ -303,6 +275,7 @@ export async function withdrawStake(
   return signature;
 }
 
+// Format stake amount
 export function formatStake(lamports: number): string {
   const sol = lamports / LAMPORTS_PER_SOL;
   if (sol >= 1000000) {
