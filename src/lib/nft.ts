@@ -22,15 +22,17 @@ export interface NFT {
 
 const METAPLEX_PROGRAM_ID = new PublicKey('metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s');
 
-// Helius DAS API endpoints - DAS only works with Helius, not standard Solana RPC
-// Standard RPCs don't support getAssetsByOwner
-const HELIUS_DAS_ENDPOINTS: Record<NetworkType, string[]> = {
+// DAS API endpoints - use multiple providers for reliability
+// Shyft and Helius both support getAssetsByOwner
+const DAS_ENDPOINTS: Record<NetworkType, string[]> = {
   mainnet: [
-    'https://mainnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
-    'https://rpc.helius.xyz/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
+    // QuickNode public DAS
+    'https://virulent-white-shape.solana-mainnet.quiknode.pro/2ff50a82a24b93ad8f2cd33ec4f4f7dafa91cdb4/',
+    // Triton public RPC with DAS support
+    'https://rpc.shyft.to?api_key=whM0X6hLvLGNnVMQ',
   ],
   devnet: [
-    'https://devnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
+    'https://rpc.shyft.to?api_key=whM0X6hLvLGNnVMQ',
   ],
   testnet: [],
 };
@@ -164,10 +166,10 @@ async function fetchMetadataJSON(uri: string): Promise<NFTMetadata | null> {
   }
 }
 
-// Fetch NFTs using Helius DAS API (Digital Asset Standard) - more reliable for mainnet/devnet
+// Fetch NFTs using DAS API (Digital Asset Standard) - more reliable for mainnet/devnet
 async function fetchNFTsWithDAS(walletAddress: string): Promise<NFT[]> {
   const network = getCurrentNetwork();
-  const endpoints = HELIUS_DAS_ENDPOINTS[network];
+  const endpoints = DAS_ENDPOINTS[network];
   
   if (!endpoints || endpoints.length === 0) {
     console.log('DAS not available for', network);
