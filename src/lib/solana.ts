@@ -9,30 +9,24 @@ import {
   ParsedAccountData,
 } from '@solana/web3.js';
 
-// Network endpoints - using reliable public RPCs with CORS support
-// Primary endpoints - prioritize more reliable free public RPCs
+// Network endpoints - using official Solana public RPCs as primary
 export const NETWORKS = {
-  mainnet: 'https://rpc.shyft.to?api_key=whM0X6hLvLGNnVMQ',
+  mainnet: 'https://api.mainnet-beta.solana.com',
   devnet: 'https://api.devnet.solana.com',
   testnet: 'https://api.testnet.solana.com',
 } as const;
 
-// Fallback endpoints for each network - multiple options for reliability
+// Fallback endpoints for each network
 const FALLBACK_ENDPOINTS = {
   mainnet: [
-    'https://solana-mainnet.core.chainstack.com/263c9f53f4e3e49483010d74ad2d7f19',
-    'https://go.getblock.io/c42c33aa4db74bb6a23dbb72c357c6cb',
     'https://rpc.ankr.com/solana',
-    'https://api.mainnet-beta.solana.com',
     'https://solana-mainnet.g.alchemy.com/v2/demo',
+    'https://solana.public-rpc.com',
   ],
   devnet: [
     'https://rpc.ankr.com/solana_devnet',
-    'https://rpc.shyft.to?api_key=whM0X6hLvLGNnVMQ',
   ],
-  testnet: [
-    'https://api.testnet.solana.com',
-  ],
+  testnet: [],
 } as const;
 
 export type NetworkType = keyof typeof NETWORKS;
