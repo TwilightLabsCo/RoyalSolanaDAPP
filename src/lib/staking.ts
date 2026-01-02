@@ -34,17 +34,20 @@ export interface StakeAccountInfo {
 }
 
 // Fetch validators from on-chain with retry logic and network-specific handling
-export async function fetchValidators(retries = 5): Promise<ValidatorInfo[]> {
+export async function fetchValidators(retries = 8): Promise<ValidatorInfo[]> {
   const { getCurrentNetwork } = await import('./solana');
   const network = getCurrentNetwork();
   
-  // Direct endpoints for validator fetching - prioritize public Solana RPCs
+  // Use multiple RPC endpoints - prioritize those with higher rate limits for getVoteAccounts
   const endpoints = network === 'mainnet' 
     ? [
-        'https://api.mainnet-beta.solana.com',
+        // Shyft and QuickNode tend to handle getVoteAccounts better
+        'https://rpc.shyft.to?api_key=whM0X6hLvLGNnVMQ',
+        'https://solana-mainnet.core.chainstack.com/263c9f53f4e3e49483010d74ad2d7f19',
+        'https://go.getblock.io/c42c33aa4db74bb6a23dbb72c357c6cb',
         'https://rpc.ankr.com/solana',
+        'https://api.mainnet-beta.solana.com',
         'https://solana-mainnet.g.alchemy.com/v2/demo',
-        'https://mainnet.helius-rpc.com/?api-key=1d8740dc-e5f4-421c-b823-e1bad1889eff',
       ]
     : network === 'devnet'
       ? [
@@ -60,19 +63,25 @@ export async function fetchValidators(retries = 5): Promise<ValidatorInfo[]> {
     const endpoint = endpoints[endpointIndex];
     
     try {
-      console.log(`Fetching validators for ${network} (attempt ${attempt + 1}) using ${endpoint.split('?')[0]}`);
+      console.log(`Fetching validators for ${network} (attempt ${attempt + 1}/${retries + 1}) using ${endpoint.split('?')[0]}`);
       
-      // Create a fresh connection for each attempt
+      // Create a fresh connection for each attempt with longer timeout
       const conn = new Connection(endpoint, {
         commitment: 'confirmed',
-        confirmTransactionInitialTimeout: 60000,
+        confirmTransactionInitialTimeout: 120000,
+        fetch: (input, init) => {
+          return fetch(input, {
+            ...init,
+            signal: AbortSignal.timeout(45000),
+          });
+        },
       });
       
       // Fetch vote accounts with timeout
       const voteAccounts = await Promise.race([
         conn.getVoteAccounts('confirmed'),
         new Promise<never>((_, reject) => 
-          setTimeout(() => reject(new Error('Timeout fetching validators')), 30000)
+          setTimeout(() => reject(new Error('Timeout fetching validators')), 45000)
         )
       ]);
       
@@ -84,7 +93,7 @@ export async function fetchValidators(retries = 5): Promise<ValidatorInfo[]> {
       
       if (allValidators.length === 0) {
         console.warn('No validators returned, trying next endpoint...');
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, 500));
         continue;
       }
       
@@ -129,7 +138,7 @@ export async function fetchValidators(retries = 5): Promise<ValidatorInfo[]> {
     } catch (error) {
       console.error(`Failed to fetch validators (attempt ${attempt + 1}):`, error);
       if (attempt < retries) {
-        await new Promise(resolve => setTimeout(resolve, 1500));
+        await new Promise(resolve => setTimeout(resolve, 800));
         continue;
       }
       return [];
