@@ -38,16 +38,14 @@ export async function fetchValidators(retries = 8): Promise<ValidatorInfo[]> {
   const { getCurrentNetwork } = await import('./solana');
   const network = getCurrentNetwork();
   
-  // Use multiple RPC endpoints - prioritize those with higher rate limits for getVoteAccounts
+  // Use multiple RPC endpoints - official Solana RPC is most reliable for getVoteAccounts
   const endpoints = network === 'mainnet' 
     ? [
-        // Shyft and QuickNode tend to handle getVoteAccounts better
-        'https://rpc.shyft.to?api_key=whM0X6hLvLGNnVMQ',
-        'https://solana-mainnet.core.chainstack.com/263c9f53f4e3e49483010d74ad2d7f19',
-        'https://go.getblock.io/c42c33aa4db74bb6a23dbb72c357c6cb',
-        'https://rpc.ankr.com/solana',
+        // Official Solana RPC - most reliable for validator queries
         'https://api.mainnet-beta.solana.com',
+        'https://rpc.ankr.com/solana',
         'https://solana-mainnet.g.alchemy.com/v2/demo',
+        'https://solana.public-rpc.com',
       ]
     : network === 'devnet'
       ? [
